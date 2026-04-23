@@ -164,7 +164,12 @@ export function createPatchCache({ persistPath }) {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectNodeExecution =
+  typeof process !== "undefined" &&
+  Array.isArray(process.argv) &&
+  import.meta.url === `file://${process.argv[1]}`;
+
+if (isDirectNodeExecution) {
   const assert = (await import("node:assert/strict")).default;
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

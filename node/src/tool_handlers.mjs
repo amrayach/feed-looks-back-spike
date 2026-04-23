@@ -204,7 +204,12 @@ export async function applyToolCallDetailed(state, toolUseBlock, options = {}) {
   return { result, patches };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectNodeExecution =
+  typeof process !== "undefined" &&
+  Array.isArray(process.argv) &&
+  import.meta.url === `file://${process.argv[1]}`;
+
+if (isDirectNodeExecution) {
   const assert = (await import("node:assert/strict")).default;
   const { createInitialState, beginCycle } = await import("./scene_state.mjs");
 

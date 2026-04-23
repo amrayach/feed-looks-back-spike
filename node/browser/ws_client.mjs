@@ -73,7 +73,12 @@ export function createWsClient({
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectNodeExecution =
+  typeof process !== "undefined" &&
+  Array.isArray(process.argv) &&
+  import.meta.url === `file://${process.argv[1]}`;
+
+if (isDirectNodeExecution) {
   const assert = (await import("node:assert/strict")).default;
 
   let pass = 0;

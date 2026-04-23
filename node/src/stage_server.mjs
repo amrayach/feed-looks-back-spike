@@ -238,12 +238,19 @@ export async function createStageServer({
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectNodeExecution =
+  typeof process !== "undefined" &&
+  Array.isArray(process.argv) &&
+  import.meta.url === `file://${process.argv[1]}`;
+
+if (isDirectNodeExecution) {
   const assert = (await import("node:assert/strict")).default;
   const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join, dirname } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
   const http = await import("node:http");
+  const { pathToFileURL } = await import("node:url");
   const { WebSocket } = await import("ws");
 
   let pass = 0;
@@ -277,6 +284,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
   }
 
+  function importModuleWithoutProcess(modulePath) {
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `globalThis.process = undefined; await import(${JSON.stringify(pathToFileURL(modulePath).href)});`,
+      ],
+      { stdio: "pipe" },
+    );
+  }
+
   function freshNodeRoot(prefix) {
     const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
     write(join(root, "browser", "stage.html"), "<!doctype html><html><body>stage</body></html>");
@@ -306,6 +325,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     } finally {
       await server.close();
     }
+  });
+
+  await t("browser-imported shared modules load without a global process", async () => {
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "src", "patch_protocol.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "src", "scene_layout.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "bootstrap.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "ws_client.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "scene_reducer.mjs"));
   });
 
   await t("replays current state after hello handshake", async () => {

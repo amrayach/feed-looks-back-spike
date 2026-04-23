@@ -651,7 +651,12 @@ export function snapshotCycle(state, runDir) {
   writeFileSync(join(logDir, filename), JSON.stringify(state, null, 2));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectNodeExecution =
+  typeof process !== "undefined" &&
+  Array.isArray(process.argv) &&
+  import.meta.url === `file://${process.argv[1]}`;
+
+if (isDirectNodeExecution) {
   const assert = (await import("node:assert/strict")).default;
   const { mkdtempSync, readFileSync } = await import("node:fs");
   const os = await import("node:os");

@@ -38,5 +38,5 @@ Output lands under `output/run_<timestamp>/`:
 - `src/packet_builder.mjs` — cycle JSON + scene state → API request
 - `src/scene_state.mjs` — in-memory state, auto-fade, disk persistence
 - `src/tool_handlers.mjs` — validate + apply Opus's tool calls
-- `src/render_html.mjs` — final scene → static HTML
+- `src/operator_views.mjs` — final scene + live monitor HTML outputs
 - `src/run_spike.mjs` — CLI entry, per-cycle loop
