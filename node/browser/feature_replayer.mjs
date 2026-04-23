@@ -71,8 +71,14 @@ export function createFeatureReplayer({
 
   function onSeeking() {
     if (!track) return;
-    // Reset pointer so next tick emits from the new position (binary search).
+    // Dispatch the sought-to frame immediately so bus.last() matches the
+    // new playback position. Setting lastFrameIndex = idx without this
+    // dispatch would leave the bus stale — tick() only emits when
+    // target > lastFrameIndex, so the sought-to frame would be skipped.
     const idx = findFrameIndex(audioEl?.currentTime ?? 0);
+    if (idx >= 0 && idx < track.frames.length) {
+      dispatchFrame(track.frames[idx]);
+    }
     lastFrameIndex = idx;
   }
 
@@ -227,7 +233,7 @@ if (isDirectNodeExecution) {
     assert.equal(bus.last("amplitude"), track.frames[cutoff].amplitude);
   });
 
-  await t("seeking backwards resets the pointer via binary search", async () => {
+  await t("seeking backwards resets the pointer AND dispatches the sought-to frame to bus.last", async () => {
     const bus = createFeatureBus();
     const audio = new FakeAudio();
     const raf = rafRunner();
@@ -246,15 +252,22 @@ if (isDirectNodeExecution) {
     audio.currentTime = 1.5;
     raf.tick();
     assert.equal(replayer.getLastFrameIndex(), Math.floor(1.5 * 60));
+    const ampAt1_5 = track.frames[Math.floor(1.5 * 60)].amplitude;
+    assert.equal(bus.last("amplitude"), ampAt1_5);
 
     audio.currentTime = 0.3;
     audio.dispatchEvent("seeking");
-    assert.equal(replayer.getLastFrameIndex(), Math.floor(0.3 * 60));
+    const seekIdx = Math.floor(0.3 * 60);
+    assert.equal(replayer.getLastFrameIndex(), seekIdx);
+    // Key assertion: bus.last() must reflect the sought-to frame NOW,
+    // not stay at the pre-seek values until playback advances.
+    assert.equal(bus.last("amplitude"), track.frames[seekIdx].amplitude);
+    assert.equal(bus.last("hijaz_state"), track.frames[seekIdx].hijaz_state);
 
     raf.tick();
-    // Now a forward tick from the post-seek position should NOT dispatch
-    // the cascade from 0.3 → 1.5 (we only dispatch up to the current time).
-    assert.equal(replayer.getLastFrameIndex(), Math.floor(0.3 * 60));
+    // Forward tick from the post-seek position should NOT re-dispatch
+    // anything (we only advance when target > lastFrameIndex).
+    assert.equal(replayer.getLastFrameIndex(), seekIdx);
   });
 
   await t("fetch failure routes to onError and does not throw from start()", async () => {
