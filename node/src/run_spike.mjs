@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
 import { makeOpusClient, resolveModel, callOpus } from "./opus_client.mjs";
 import { buildPacket } from "./packet_builder.mjs";
@@ -20,6 +21,8 @@ import { createStageServer } from "./stage_server.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NODE_ROOT = resolve(__dirname, "..");
+const DEFAULT_PYTHON_BIN = process.env.FLB_PYTHON_BIN ?? "/home/amay/miniconda3/envs/ambi_audio/bin/python";
+const STREAM_FEATURES_PATH = resolve(NODE_ROOT, "..", "python", "stream_features.py");
 
 // opus 4.7 token pricing ($/MTok). edit here if pricing changes; the
 // runner never hits the API in phase 2, so this only affects phase 3
@@ -42,7 +45,7 @@ const CYCLE_STATUS = Object.freeze({
 const VALID_STOP_REASONS = new Set(["tool_use", "end_turn"]);
 
 function usage() {
-  return `Usage: node src/run_spike.mjs <corpus_dir> --config <name> [--cycles N:M] [--dry-run]
+  return `Usage: node src/run_spike.mjs <corpus_dir> --config <name> [--cycles N:M] [--dry-run] [--feature-producer <python|none>]
        node src/run_spike.mjs --self-test
 
 Arguments:
@@ -577,6 +580,36 @@ function detectStageMode(runDir) {
   return hasPrecomputedAudio && hasPrecomputedFeatures ? "precompute" : "live";
 }
 
+// Phase 3 narrow diff: feature-producer spawn sits outside the cycle loop so
+// it does not collide with Phase 5's self-frame hook (which lives INSIDE the
+// loop body). Returns null in precompute / self-test / producer=none paths.
+export function startFeatureProducer({
+  mode,
+  runId,
+  wsUrl,
+  producer,
+  spawnImpl = null,
+  pythonBin = DEFAULT_PYTHON_BIN,
+  scriptPath = STREAM_FEATURES_PATH,
+  device = process.env.FLB_AUDIO_DEVICE ?? null,
+} = {}) {
+  if (mode !== "live" || producer !== "python") return null;
+  const args = [scriptPath, "--mode", "live", "--ws-url", wsUrl, "--run-id", runId];
+  if (device) args.push("--device", device);
+  if (spawnImpl) return spawnImpl(pythonBin, args);
+  const child = spawn(pythonBin, args, { stdio: "inherit" });
+  return {
+    stop() {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // child may have already exited; ignore
+      }
+    },
+    pid: child.pid,
+  };
+}
+
 function registerSigintHandler({ processLike = process, onInterrupt }) {
   if (!processLike || typeof processLike.on !== "function") return () => {};
   const unregister =
@@ -617,6 +650,8 @@ async function run(options) {
     createStageServerImpl = createStageServer,
     fetchImageImpl = undefined,
     processLike = process,
+    featureProducer = null,
+    startFeatureProducerImpl = startFeatureProducer,
   } = options;
 
   const cycles = listCycleFiles(corpusDir).filter((c) => {
@@ -645,6 +680,19 @@ async function run(options) {
   const stageServer = await createStageServerImpl();
   await stageServer.setCurrentRunContext({ runId, mode: stageMode, runDir });
   const operatorUrl = stageServer.getOperatorUrl({ runId, mode: stageMode });
+
+  // Phase 3: spawn the Python feature producer in live stage mode only.
+  // Default is 'python' when stageMode==='live' and mode==='real' (no point
+  // streaming live audio in a dry-run that fabricates cycle packets).
+  const resolvedProducer = featureProducer ?? (stageMode === "live" && mode === "real" ? "python" : "none");
+  const wsUrl = `ws://${stageServer.host}:${stageServer.port}/ws`;
+  const featureProducerHandle = startFeatureProducerImpl({
+    mode: stageMode,
+    runId,
+    wsUrl,
+    producer: resolvedProducer,
+  });
+
   const interruptState = { requested: false, signal: null, announced: false };
   const cleanupSigintHandler = registerSigintHandler({
     processLike,
@@ -905,6 +953,13 @@ async function run(options) {
         (finalHtmlPath ? `Final HTML: ${finalHtmlPath}\n` : ""),
     );
 
+    if (featureProducerHandle) {
+      try {
+        featureProducerHandle.stop();
+      } catch {
+        // best-effort; child may have already exited
+      }
+    }
     await stageServer.close();
 
     return {
@@ -1273,6 +1328,86 @@ async function runSelfTests() {
     assert.equal(existsSync(join(runDir, "final_scene.html")), true);
   });
 
+  await t("startFeatureProducer spawns the Python child when mode=live and producer=python", async () => {
+    const calls = [];
+    const fakeSpawn = (cmd, args) => {
+      calls.push({ cmd, args });
+      return {
+        stop() {
+          calls.push({ cmd: "STOP" });
+        },
+      };
+    };
+    const handle = startFeatureProducer({
+      mode: "live",
+      runId: "feat123",
+      wsUrl: "ws://127.0.0.1:9999/ws",
+      producer: "python",
+      spawnImpl: fakeSpawn,
+      pythonBin: "/opt/python/bin/python",
+      scriptPath: "/opt/feed/python/stream_features.py",
+    });
+    assert.ok(handle, "handle should exist");
+    handle.stop();
+    assert.equal(calls[0].cmd, "/opt/python/bin/python");
+    assert.equal(calls[0].args[0], "/opt/feed/python/stream_features.py");
+    assert.equal(calls[0].args[1], "--mode");
+    assert.equal(calls[0].args[2], "live");
+    assert.deepEqual(calls[0].args.slice(3, 7), ["--ws-url", "ws://127.0.0.1:9999/ws", "--run-id", "feat123"]);
+    assert.equal(calls[1].cmd, "STOP");
+  });
+
+  await t("startFeatureProducer is a no-op when mode=precompute or producer=none", () => {
+    const calls = [];
+    const fakeSpawn = () => {
+      calls.push("spawn");
+      return { stop() {} };
+    };
+    assert.equal(
+      startFeatureProducer({
+        mode: "precompute",
+        runId: "a",
+        wsUrl: "ws://127.0.0.1:9999/ws",
+        producer: "python",
+        spawnImpl: fakeSpawn,
+      }),
+      null,
+    );
+    assert.equal(
+      startFeatureProducer({
+        mode: "live",
+        runId: "a",
+        wsUrl: "ws://127.0.0.1:9999/ws",
+        producer: "none",
+        spawnImpl: fakeSpawn,
+      }),
+      null,
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  await t("startFeatureProducer appends --device when one is provided", () => {
+    const calls = [];
+    const fakeSpawn = (cmd, args) => {
+      calls.push({ cmd, args });
+      return { stop() {} };
+    };
+    startFeatureProducer({
+      mode: "live",
+      runId: "dev",
+      wsUrl: "ws://127.0.0.1:9999/ws",
+      producer: "python",
+      spawnImpl: fakeSpawn,
+      device: "Audient iD14",
+      pythonBin: "python",
+      scriptPath: "stream_features.py",
+    });
+    const args = calls[0].args;
+    const deviceIdx = args.indexOf("--device");
+    assert.ok(deviceIdx >= 0, "expected --device in args");
+    assert.equal(args[deviceIdx + 1], "Audient iD14");
+  });
+
   process.stdout.write(
     `\n============ run_spike.mjs self-test ============\n${pass}/${pass + fail} passed\n`,
   );
@@ -1290,6 +1425,7 @@ async function main() {
         config: { type: "string" },
         cycles: { type: "string" },
         "dry-run": { type: "boolean", default: false },
+        "feature-producer": { type: "string" },
       },
     });
   } catch (err) {
@@ -1304,8 +1440,9 @@ async function main() {
   const corpusDir = resolve(positionals[0]);
   const configName = values.config;
   const cyclesRange = parseCyclesRange(values.cycles);
+  const featureProducer = values["feature-producer"] ?? null;
 
-  await run({ corpusDir, configName, cyclesRange, mode });
+  await run({ corpusDir, configName, cyclesRange, mode, featureProducer });
 }
 
 if (process.argv.includes("--self-test")) {
