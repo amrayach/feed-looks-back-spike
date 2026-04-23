@@ -131,7 +131,7 @@ Three tiers joined by a WebSocket control plane (scene patches) and a WebSocket 
 | `stage_server.mjs` | **New** | WebSocket server (`ws` lib) + static file server (Node `http` built-in) on the same port; handles connect/disconnect, broadcasts patches, replays from `patch_cache` on reconnect |
 | `patch_cache.mjs` | **New — port of scaffold's `server/cache.ts`** | In-memory Map + persistent file; stores per-run patch stream; used for reconnect replay and post-run analysis |
 | `sanitize.mjs` | **New — migrated from `render_html.mjs:258–316`** | SVG + CSS validators; called by tool_handlers before emitting patches with SVG/CSS content |
-| `image_resolver.mjs` | **New — migrated from `render_html.mjs:845–888`** | Resolves `addImage` queries to local file paths via `image_fetch.mjs`; returns assets for `element.add` patches |
+| `image_resolver.mjs` | **New — migrated from `render_html.mjs:845–888`** | Resolves `addImage` queries to local file paths via `image_fetch.mjs`. Returns `{browser_url: "/image_cache/<hash>.jpg", fs_path: "<abs>", attribution, cached}` for `element.add` patches. Does **not** copy files into per-run dirs — `image_cache/` is shared across runs by design (see §5.2 static paths; image_fetch.mjs:9, :92). |
 | `operator_views.mjs` | **New — migrated from `render_html.mjs:687–966`** | Server-side operator observability: composition history, scene-overview mirror, live monitor page, run statistics. Still writes `output/<run>/live_monitor.html`. |
 | `binding_easing.mjs` | **New — port of scaffold's `UniformMutator`** | `easeInOutCubic` + lerp state Map + `applyPatch` / `update` / `isIdle` API; adapted to DOM-property targets |
 | `image_content.mjs` | **New** | Loads mood-board JSON; validates MIME + size + resolution (downscales via `sharp` when needed); returns content-block array. Also `captureSelfFrame(stageUrl)` via Playwright headless. |
@@ -146,7 +146,20 @@ Served statically by `stage_server.mjs` at the same port as the WebSocket endpoi
 - `/vendor/p5.min.js` → read once from `node_modules/p5/lib/p5.min.js` at startup; cached in memory; served to any consumer. Used by stage_server when generating p5-iframe srcdoc (see §7.3) so sketches have no external-CDN dependency during performance.
 - `/run/<run_id>/audio.wav` → `node/output/<run_id>/audio.wav` (pre-recorded mode source audio; file copied or symlinked into the run directory at run start)
 - `/run/<run_id>/features_track.json` → `node/output/<run_id>/features_track.json` (Python `stream_features.py --mode precompute` output; includes ALL features — amplitude, onset_strength, spectral_centroid, and Hijaz events)
-- `/run/<run_id>/assets/*` → `node/output/<run_id>/assets/*` (images fetched by `addImage`)
+- `/image_cache/<filename>` → `node/image_cache/<filename>` (shared across runs; this is where `image_fetch.mjs` already writes — `DEFAULT_CACHE_DIR = join(NODE_ROOT, "image_cache")` at `image_fetch.mjs:9`; files named `<sha256-16>.jpg` per `image_fetch.mjs:92`). No per-run copy or symlink needed — `image_resolver.mjs` returns browser URLs in this shape directly, so `element.add` patches reference stable, deduplicated paths.
+
+**Bootstrap: how stage.html learns the active run.** stage_server does not embed per-run state in the HTML. Operator URL format:
+
+```
+http://<host>:<port>/?run_id=<run_id>&mode=<precompute|live>
+```
+
+- `stage.html` reads `new URLSearchParams(location.search)` at startup and exposes `{run_id, mode}` as a bootstrap config to every module (attached to `window.__stage` or imported via a small `/browser/bootstrap.mjs`).
+- `feature_replayer.mjs` uses `run_id` to fetch `/run/<run_id>/features_track.json` and to point the `<audio>` element's `src` attribute at `/run/<run_id>/audio.wav`.
+- `ws_client.mjs` sends `{run_id, mode}` in its first WebSocket message so the server can route patches and validate the client is looking at the run it expects.
+- If either param is missing, `stage.html` renders a loud error page and halts — no silent guessing.
+- `run_spike.mjs` prints the fully-formed operator URL (with params) to stdout on startup so the operator can paste-and-open.
+- Playwright self-frame capture constructs the same URL from the active run_id and mode, so it sees an identical bootstrap path.
 
 | Module | Purpose |
 |---|---|
@@ -615,17 +628,18 @@ Full 31-cycle real-API run on the same audio as Session H baseline (`run_2026042
 - **API cost per 31-cycle production run:**
   - Session H baseline: $1.13
   - Session I projection: $1.30–$1.50 (mood-board image tokens + occasional self-frame; cached prefix amortizes most of the mood-board cost after cycle 1)
-- **New dependencies:** 4 npm (`zod`, `ws`, `playwright`, `sharp`), 1–2 Python (`websockets`, possibly `sounddevice`)
+- **New dependencies:** 5 npm (`zod`, `ws`, `playwright`, `sharp`, `p5`), 1–2 Python (`websockets`, possibly `sounddevice`)
 - **Implementation timeline:** 7 phases with review gates; roughly one phase per session
 
 ---
 
 ## 17. Approval gate
 
-Written. Awaiting:
+Status (as of this commit):
 
-1. **User review** of this spec in written form
-2. **Spec commit** to git (initial commit of `feed-looks-back-spike/` alongside extended `.gitignore`)
-3. **Codex review** of this spec as a versioned artifact (first gate Codex can review as a git-tracked file)
-4. **User final approval**
-5. **Transition** to `superpowers:writing-plans` skill for the detailed Phase 1 implementation plan
+- ✅ Spec written
+- ✅ Spec committed to git (`feed-looks-back-spike` repo initialized, `.gitignore` extended)
+- ✅ First Codex review against `d9cb82e` — 5 findings + 1 open question; all addressed in commit `3658e40`
+- ✅ Second Codex review against `3658e40` — 4 findings (run_id bootstrap, image-cache route, stale dep count, stale approval gate); addressed in this commit
+- ⏳ User final approval
+- ⏳ Transition to `superpowers:writing-plans` for the Phase 1 implementation plan
