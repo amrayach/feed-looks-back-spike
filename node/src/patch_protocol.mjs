@@ -2,7 +2,14 @@ import { z } from "zod";
 
 export const ReactivitySchema = z.object({
   property: z.enum(["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"]),
-  feature: z.enum(["amplitude", "onset_strength", "spectral_centroid", "hijaz_intensity", "hijaz_tahwil"]),
+  feature: z.enum([
+    "amplitude",
+    "onset_strength",
+    "spectral_centroid",
+    "hijaz_state",
+    "hijaz_intensity",
+    "hijaz_tahwil",
+  ]),
   map: z.object({
     in: z.tuple([z.number(), z.number()]),
     out: z.tuple([z.number(), z.number()]),
@@ -10,6 +17,50 @@ export const ReactivitySchema = z.object({
   }),
   smoothing_ms: z.number().optional(),
 });
+
+const HIJAZ_STATES = ["quiet", "approach", "arrived", "tahwil", "aug2"];
+
+const FEATURE_VALUE_SCHEMAS = {
+  amplitude: z.number().min(0).max(1),
+  onset_strength: z.number().min(0).max(1),
+  spectral_centroid: z.number().min(0),
+  hijaz_state: z.enum(HIJAZ_STATES),
+  hijaz_intensity: z.number().min(0).max(1),
+  hijaz_tahwil: z.boolean(),
+};
+
+export function FeatureValueSchema(feature) {
+  const schema = FEATURE_VALUE_SCHEMAS[feature];
+  if (!schema) throw new Error(`unknown feature name: ${feature}`);
+  return schema;
+}
+
+export const FEATURE_NAMES = Object.freeze(Object.keys(FEATURE_VALUE_SCHEMAS));
+
+export const FeatureFrameSchema = z.object({
+  t: z.number(),
+  amplitude: FEATURE_VALUE_SCHEMAS.amplitude,
+  onset_strength: FEATURE_VALUE_SCHEMAS.onset_strength,
+  spectral_centroid: FEATURE_VALUE_SCHEMAS.spectral_centroid,
+  hijaz_state: FEATURE_VALUE_SCHEMAS.hijaz_state,
+  hijaz_intensity: FEATURE_VALUE_SCHEMAS.hijaz_intensity,
+  hijaz_tahwil: FEATURE_VALUE_SCHEMAS.hijaz_tahwil,
+});
+
+export const FeaturesTrackSchema = z.object({
+  schema_version: z.literal("1"),
+  duration_s: z.number().nonnegative(),
+  frame_rate_hz: z.number().positive(),
+  frames: z.array(FeatureFrameSchema),
+});
+
+export function assertFeatureFrame(value) {
+  return FeatureFrameSchema.parse(value);
+}
+
+export function assertFeaturesTrack(value) {
+  return FeaturesTrackSchema.parse(value);
+}
 
 export const ElementSpecSchema = z.object({
   element_id: z.string(),
@@ -67,10 +118,26 @@ export const PatchSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("replay.end"), run_id: z.string() }),
 ]);
 
-export const WsMessageSchema = z.discriminatedUnion("channel", [
+const WsMessageUnion = z.discriminatedUnion("channel", [
   z.object({ channel: z.literal("patch"), patch: PatchSchema }),
-  z.object({ channel: z.literal("feature"), feature: z.string(), value: z.unknown() }),
+  z.object({
+    channel: z.literal("feature"),
+    feature: z.enum(FEATURE_NAMES),
+    value: z.unknown(),
+  }),
 ]);
+
+export const WsMessageSchema = WsMessageUnion.superRefine((data, ctx) => {
+  if (data.channel !== "feature") return;
+  const result = FEATURE_VALUE_SCHEMAS[data.feature].safeParse(data.value);
+  if (!result.success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `invalid value for feature '${data.feature}': ${result.error.message}`,
+      path: ["value"],
+    });
+  }
+});
 
 export function assertPatch(value) {
   return PatchSchema.parse(value);
@@ -100,6 +167,15 @@ if (isDirectNodeExecution) {
       process.stdout.write(`  FAIL ${desc}\n    ${err.message}\n`);
     }
   }
+
+  t("ReactivitySchema accepts hijaz_state as a feature name", () => {
+    const parsed = ReactivitySchema.parse({
+      property: "opacity",
+      feature: "hijaz_state",
+      map: { in: [0, 1], out: [0, 1], curve: "linear" },
+    });
+    assert.equal(parsed.feature, "hijaz_state");
+  });
 
   t("PatchSchema accepts background.set", () => {
     const parsed = PatchSchema.parse({
@@ -167,6 +243,79 @@ if (isDirectNodeExecution) {
         channel: "patch",
         patch: { type: "element.add", element: { element_id: "x" } },
       }),
+    );
+  });
+
+  t("FeatureValueSchema validates amplitude in [0,1]", () => {
+    assert.equal(FeatureValueSchema("amplitude").parse(0.5), 0.5);
+    assert.throws(() => FeatureValueSchema("amplitude").parse(1.5));
+    assert.throws(() => FeatureValueSchema("amplitude").parse(-0.1));
+  });
+
+  t("FeatureValueSchema validates hijaz_state enum", () => {
+    assert.equal(FeatureValueSchema("hijaz_state").parse("arrived"), "arrived");
+    assert.throws(() => FeatureValueSchema("hijaz_state").parse("unknown_state"));
+  });
+
+  t("FeatureValueSchema validates hijaz_tahwil boolean", () => {
+    assert.equal(FeatureValueSchema("hijaz_tahwil").parse(true), true);
+    assert.throws(() => FeatureValueSchema("hijaz_tahwil").parse("true"));
+  });
+
+  t("FeatureFrameSchema requires all six features plus timestamp", () => {
+    const parsed = FeatureFrameSchema.parse({
+      t: 1.234,
+      amplitude: 0.4,
+      onset_strength: 0.2,
+      spectral_centroid: 1200,
+      hijaz_state: "approach",
+      hijaz_intensity: 0.6,
+      hijaz_tahwil: false,
+    });
+    assert.equal(parsed.hijaz_state, "approach");
+    assert.throws(() => FeatureFrameSchema.parse({ t: 0 }));
+  });
+
+  t("FeaturesTrackSchema requires schema_version '1' and a frames array", () => {
+    const parsed = FeaturesTrackSchema.parse({
+      schema_version: "1",
+      duration_s: 0.1,
+      frame_rate_hz: 60,
+      frames: [
+        {
+          t: 0,
+          amplitude: 0,
+          onset_strength: 0,
+          spectral_centroid: 0,
+          hijaz_state: "quiet",
+          hijaz_intensity: 0,
+          hijaz_tahwil: false,
+        },
+      ],
+    });
+    assert.equal(parsed.frames.length, 1);
+    assert.throws(() =>
+      FeaturesTrackSchema.parse({
+        schema_version: "2",
+        duration_s: 1,
+        frame_rate_hz: 60,
+        frames: [],
+      }),
+    );
+  });
+
+  t("WsMessageSchema feature arm validates feature/value pair", () => {
+    const parsed = WsMessageSchema.parse({
+      channel: "feature",
+      feature: "amplitude",
+      value: 0.7,
+    });
+    assert.equal(parsed.value, 0.7);
+    assert.throws(() =>
+      WsMessageSchema.parse({ channel: "feature", feature: "amplitude", value: 1.7 }),
+    );
+    assert.throws(() =>
+      WsMessageSchema.parse({ channel: "feature", feature: "unknown", value: 0 }),
     );
   });
 
