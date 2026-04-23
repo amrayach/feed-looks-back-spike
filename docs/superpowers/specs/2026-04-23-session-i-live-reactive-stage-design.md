@@ -59,25 +59,28 @@ Three tiers joined by a WebSocket control plane (scene patches) and a WebSocket 
 ┌──────────────────────────────────────────────────────────────┐
 │ BROWSER STAGE — node/browser/stage.html (long-running tab)   │
 │                                                               │
-│   <audio>  ────────┐                                         │
-│   (pre-rec only)   │                                         │
-│                    ▼                                         │
-│              feature_bus.mjs                                 │
-│              (central audio-feature event bus, ~60 Hz)       │
-│                    ▲                                         │
-│   WebSocket ───────┤                                         │
-│   (channel=feature,                                          │
-│    live mode only) │                                         │
-│                    │                                         │
-│                    ▼                                         │
-│              binding_engine.mjs                              │
-│              (reactivity → DOM properties, eased)            │
+│   feature_replayer ──┐  (pre-rec: fetches features_track.json │
+│   (sync to            │   from /run/<id>/…, dispatches all    │
+│    <audio>.currentTime)│   features inc. amp/onset/centroid)  │
+│                       ▼                                       │
+│               feature_bus.mjs                                 │
+│               (central audio-feature event bus, ~60 Hz)       │
+│                       ▲                                       │
+│   WebSocket ──────────┤                                       │
+│   (channel=feature;                                           │
+│    live mode only)    │                                       │
+│                       ▼                                       │
+│               binding_engine.mjs                              │
+│               (reactivity → DOM properties, eased)            │
 │                                                               │
-│              p5_sandbox.mjs                                  │
-│              (iframe-per-sketch, 1 bg + N=3 localized)       │
+│               p5_sandbox.mjs                                  │
+│               (iframe-per-sketch, 1 bg + N=3 localized)       │
 │                                                               │
-│   WebSocket ──▶ scene_reducer.mjs                            │
-│   (channel=patch) (applies patches to DOM)                   │
+│   WebSocket ──▶ scene_reducer.mjs                             │
+│   (channel=patch)   (applies patches to DOM)                  │
+│                                                               │
+│   <audio src="/run/<id>/audio.wav">                           │
+│   (pre-rec only; playback for humans, NOT a feature source)   │
 └──────────────────────────────────────────────────────────────┘
            ▲ patches out              ▲ hot-reload (dev)
            │ {element.*, sketch.*, …} │ {prompt.replace, …}
@@ -105,7 +108,7 @@ Three tiers joined by a WebSocket control plane (scene patches) and a WebSocket 
 ### Key architectural decisions (carried from brainstorming)
 
 - **Long-running stage, not per-cycle snapshots** (Option A). Browser tab stays open; Node becomes a WebSocket server; scene_reducer applies patches in place.
-- **Python is sole audio capture in live mode** (narrowed from initial Option C hybrid after Codex review). iD14 → Python DSP → WebSocket → browser feature bus. This eliminates the `getUserMedia` browser permission flow entirely. Pre-recorded mode keeps browser Web Audio on the `<audio>` element (no permission needed, zero-latency on the file).
+- **Python is the sole feature extractor in both modes** (narrowed from initial Option C hybrid after the first Codex review; further narrowed in a second Codex pass that flagged cross-implementation drift between browser Web Audio and Python DSP). Live: iD14 → Python DSP → WebSocket → browser. Pre-recorded: audio file → Python pre-computes the full feature track (`features_track.json`, including amplitude/onset/centroid alongside Hijaz events) → browser `feature_replayer` dispatches in sync with `<audio>.currentTime`. The browser never analyzes audio. This eliminates offline-vs-live drift in feature distributions and timing (bindings tuned against pre-recorded audio hold live), eliminates the `getUserMedia` permission flow, and shrinks the browser's attack surface.
 - **p5 scope: hybrid with N=3 cap** (Option C). One background slot + up to 3 localized sketches; 4th addition auto-retires oldest. Sketches run in `<iframe sandbox>` with CSP, heartbeat watchdog, and kill-and-replace.
 - **Perception: cached mood board + event-triggered self-frame + every-5-cycle baseline** (Option D). Mood board lives in the cached system-message prefix; self-frame rides in the uncached user-message block on triggers.
 - **Mood board: layered Z** — figurative positive references + tradition anchors + negative "not-this" references. Placeholder canon ships; artist swaps via `mood_board.json` config.
@@ -140,14 +143,17 @@ Served statically by `stage_server.mjs` at the same port as the WebSocket endpoi
 - `/` → `node/browser/stage.html`
 - `/browser/*.mjs` → `node/browser/*.mjs`
 - `/shared/*.mjs` → `node/src/*.mjs` (narrow allowlist: `patch_protocol.mjs`, `binding_easing.mjs` — the two modules consumed by both Node and the browser). Serving only the allowlist avoids accidentally exposing `opus_client.mjs` or other Node-only code.
+- `/vendor/p5.min.js` → read once from `node_modules/p5/lib/p5.min.js` at startup; cached in memory; served to any consumer. Used by stage_server when generating p5-iframe srcdoc (see §7.3) so sketches have no external-CDN dependency during performance.
+- `/run/<run_id>/audio.wav` → `node/output/<run_id>/audio.wav` (pre-recorded mode source audio; file copied or symlinked into the run directory at run start)
+- `/run/<run_id>/features_track.json` → `node/output/<run_id>/features_track.json` (Python `stream_features.py --mode precompute` output; includes ALL features — amplitude, onset_strength, spectral_centroid, and Hijaz events)
+- `/run/<run_id>/assets/*` → `node/output/<run_id>/assets/*` (images fetched by `addImage`)
 
 | Module | Purpose |
 |---|---|
 | `stage.html` | Single long-running page; loads modules as native ES modules via `<script type="module">`; holds `<audio>` element in pre-recorded mode |
 | `scene_reducer.mjs` | Applies patches to DOM; owns layout and positioning logic migrated from `render_html.mjs`'s pure-layout portion; manages element lifecycle (add, update, fade with CSS transition, remove); renders composition groups within a shared container carrying `data-group-id` |
 | `feature_bus.mjs` | Central EventTarget-based event bus; exposes `subscribe(feature, cb)` / `dispatch(feature, value)`; merges incoming feature streams into one observable surface |
-| `web_audio.mjs` | **Pre-recorded mode only.** Opens `<audio>` element via Web Audio API; computes amplitude (RMS), onset strength (spectral flux), spectral centroid at ~60 Hz; dispatches to feature_bus |
-| `feature_replayer.mjs` | **Pre-recorded mode only.** Reads `features_track.json` (pre-computed by Python); dispatches Hijaz events to feature_bus synced to `<audio>.currentTime` |
+| `feature_replayer.mjs` | **Pre-recorded mode only.** Fetches `/run/<run_id>/features_track.json` (pre-computed by Python with ALL features — amplitude, onset_strength, spectral_centroid, hijaz_state, hijaz_intensity, hijaz_tahwil); dispatches every feature to feature_bus synced to `<audio>.currentTime`. Browser performs no audio analysis. |
 | `ws_client.mjs` | WebSocket client: receives scene patches + (live mode) Python feature events, both multiplexed by `channel`; forwards features to feature_bus, patches to scene_reducer |
 | `binding_engine.mjs` | Reads each element's `reactivity` config; subscribes to feature_bus; updates DOM properties per audio frame using `binding_easing.mjs` (shared with Node). Handles multi-binding per element, smoothing_ms, curve easing. |
 | `p5_sandbox.mjs` | Manages background slot + up to 3 localized sketch iframes; handles lifecycle (mount, retire on watchdog timeout / script error / N=3 overflow); injects feature bridge via postMessage |
@@ -220,7 +226,7 @@ Dynamic reference: Opus sees its own previous rendered output at moments when co
 
 **Capture pipeline:**
 1. Node calls `captureSelfFrame(stageUrl)` in `image_content.mjs`
-2. Playwright headless browser (separate process, lazily launched on first trigger) loads the stage URL, waits for a `data-stage-ready` DOM attribute that scene_reducer sets after applying the last patch of the cycle, takes a PNG screenshot
+2. Playwright headless browser (separate process, lazily launched on first trigger) loads the stage URL, waits for `data-stage-ready="1"` (set by scene_reducer only after the WebSocket `replay.begin`/`replay.end` handshake has completed AND the most recent cycle has been `cycle.end`-terminated — see §9 reconnect semantics). This two-condition gate guarantees Playwright never captures mid-replay or mid-cycle state. Takes a PNG screenshot.
 3. PNG bytes → image content block (same shape as mood-board images, but no cache_control — self-frame changes every cycle)
 4. Inject into next cycle's user message, labeled: `"Previous frame (cycle N). Elements=6, dominant=text, background_age=18s. Adjust if composition needs attention."`
 
@@ -285,14 +291,20 @@ Dynamic reference: Opus sees its own previous rendered output at moments when co
 
 ### 7.3 Sandbox & safety
 
-Each sketch runs in:
+Each sketch runs in an iframe whose `srcdoc` inlines the vendored p5 source + the user-authored sketch code + a feature-bridge listener. No external CDN is used; p5 is served locally (see §13.4 dependencies and §5.2 static paths).
+
 ```html
 <iframe class="p5-sketch"
         sandbox="allow-scripts"
-        csp="script-src 'unsafe-inline' https://cdnjs.cloudflare.com;
-             connect-src 'none';
-             img-src 'self' blob: data:;">
+        csp="default-src 'none'; script-src 'unsafe-inline'; img-src blob: data:;"
+        srcdoc="<!DOCTYPE html><html><body>
+                  <script><!-- p5.min.js content inlined by stage_server at mount --></script>
+                  <script><!-- user-authored p5 sketch code --></script>
+                  <script><!-- feature-bridge listener --></script>
+                </body></html>">
 ```
+
+**p5 vendoring.** p5 is an npm dependency (§13.4). At startup, stage_server reads `node_modules/p5/lib/p5.min.js` once, keeps it in memory, and inlines it into each sketch iframe's `srcdoc`. No network access is required at runtime, which is what makes `connect-src 'none'` viable.
 
 **Runtime guards:**
 - **No same-origin access.** Sandbox without `allow-same-origin` → iframe cannot read parent DOM, cookies, or storage.
@@ -300,7 +312,7 @@ Each sketch runs in:
 - **Heartbeat watchdog.** Iframe posts `{type:"heartbeat", frame_count, last_frame_time_ms}` every 500 ms. Parent kills the iframe on 2 s silence and emits a `sketch.retire` patch.
 - **postMessage validation.** Parent accepts only `{type: "heartbeat" | "error" | "ready", ...}` with zod schema validation; unknown message types dropped silently.
 - **Kill-and-replace.** Any error (load failure, script error, timeout) triggers removal without affecting other sketches or the parent stage. Errors logged to `operator_views` console for post-show review.
-- **N=3 enforced on both ends.** Node rejects the 4th `addP5Sketch` if no slot free (auto-retires oldest); browser reducer also enforces.
+- **N=3 enforced on both ends, eviction-on-overflow semantics (never rejection).** When Opus calls `addP5Sketch` and all 3 localized slots are full, Node emits a `sketch.retire` patch for the oldest localized sketch *before* applying the new `sketch.add`. The tool handler returns the new sketch_id to Opus in both cases (initial-3 and overflow-evict); no rejection path. Browser reducer enforces the same cap as belt-and-suspenders: if a 4th `sketch.add` arrives without a preceding `sketch.retire`, browser evicts the oldest locally and logs a warning to operator_views.
 
 **Sketch access to features:**
 ```js
@@ -403,7 +415,8 @@ const PatchSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("cycle.begin"), cycle_n: z.number(), hijaz_state: z.record(z.string(), z.unknown()) }),
   z.object({ type: z.literal("cycle.end") }),
   z.object({ type: z.literal("prompt.replace"), version: z.string() }),
-  z.object({ type: z.literal("scene.snapshot_request"), request_id: z.string() })
+  z.object({ type: z.literal("replay.begin"), run_id: z.string() }),
+  z.object({ type: z.literal("replay.end"), run_id: z.string() })
 ]);
 
 // Multiplexed WS message
@@ -413,7 +426,20 @@ const WsMessageSchema = z.discriminatedUnion("channel", [
 ]);
 ```
 
-**Reconnect semantics.** On a new stage connection, server replays `patch_cache` for the current run as a sequence of `element.add`, `composition_group.add`, `sketch.add`, and `sketch.background.set` patches — current state, not history. `.fade` / `.remove` events that already happened are not replayed. Live stream resumes after replay.
+**Reconnect semantics.** On a new stage connection, the server performs a bracketed replay:
+
+1. Emit `{type: "replay.begin", run_id}`.
+2. Replay `patch_cache` as a sequence of `element.add`, `composition_group.add`, `sketch.add`, and `sketch.background.set` patches — current state only; `.fade` / `.remove` history is not replayed, and intermediate `.update`s are collapsed into the final element state.
+3. Emit `{type: "replay.end", run_id}`.
+4. Live stream resumes.
+
+Browser `scene_reducer` tracks replay state as a small state machine:
+- **initial** → on `replay.begin`: enter **replaying**, suspend DOM transitions/animations for speed.
+- **replaying** → on `replay.end`: enter **synced**, re-enable transitions, mark state. DOM attribute `data-stage-ready` is **not yet set** — a cycle boundary hasn't been observed.
+- **synced** → on next `cycle.end`: set `data-stage-ready="1"`.
+- `data-stage-ready` is cleared on `cycle.begin` and re-set on the following `cycle.end` for the lifetime of the connection (so Playwright always captures a fully-committed cycle, never a mid-cycle state).
+
+This gives self-frame capture a precise handshake and guarantees Playwright never screenshots a partially-replayed or mid-cycle scene.
 
 **Composition-group field normalization.** The existing `tool_handlers.mjs` stores `composition_group_id` nested inside `element.content` (at `scene_state.mjs:148`). In Session I's patch protocol, `ElementSpec.composition_group_id` is a top-level field. `patch_emitter.mjs` is responsible for this one-way normalization: on emit, it reads `element.content.composition_group_id` and hoists it to `ElementSpec.composition_group_id`, leaving the content object otherwise intact. Scene_state's internal shape is unchanged (65 existing tests still pass); only the wire format is normalized. The browser's `scene_reducer.mjs` reads from the top-level field only.
 
@@ -423,9 +449,9 @@ const WsMessageSchema = z.discriminatedUnion("channel", [
 
 ### 10.1 Pre-recorded mode (development, testing, pre-performance)
 
-- Python: `stream_features.py --mode precompute --input path/to/audio.wav --output features_track.json` runs DSP on the file offline, writes full feature track keyed by timestamp.
-- Browser: `<audio src="audio.wav">` plays the file; `web_audio.mjs` runs Web Audio API on the audio element's output for fast features (amplitude, onset, centroid); `feature_replayer.mjs` reads `features_track.json` and dispatches Hijaz events to feature_bus synced to `<audio>.currentTime`.
-- No WebSocket feature channel in this mode — all features locally sourced.
+- Python: `stream_features.py --mode precompute --input path/to/audio.wav --output features_track.json` runs DSP on the file offline, writing a full feature track keyed by timestamp. The track contains **all features** (amplitude, onset_strength, spectral_centroid, hijaz_state, hijaz_intensity, hijaz_tahwil). Python is the single feature extractor across both modes — no cross-implementation drift between offline tuning and live performance.
+- Browser: `<audio src="/run/<run_id>/audio.wav">` plays the file for human listeners; `feature_replayer.mjs` fetches `/run/<run_id>/features_track.json` at startup (routes defined in §5.2), then dispatches every feature to `feature_bus` synced to `<audio>.currentTime`. The browser performs no audio analysis — `<audio>` is playback-only.
+- No WebSocket feature channel in this mode — all features locally sourced from the pre-computed JSON.
 
 ### 10.2 Live mode (performance)
 
@@ -462,7 +488,7 @@ All features are normalized to [0, 1] where applicable (amplitude, onset_strengt
 
 ### 12.2 New inline self-tests (one per new `.mjs`)
 
-`patch_protocol.mjs`, `patch_emitter.mjs`, `patch_cache.mjs`, `stage_server.mjs`, `sanitize.mjs`, `image_resolver.mjs`, `operator_views.mjs`, `binding_easing.mjs`, `image_content.mjs`, `scene_reducer.mjs`, `feature_bus.mjs`, `binding_engine.mjs`, `p5_sandbox.mjs`.
+`patch_protocol.mjs`, `patch_emitter.mjs`, `patch_cache.mjs`, `stage_server.mjs`, `sanitize.mjs`, `image_resolver.mjs`, `operator_views.mjs`, `binding_easing.mjs`, `image_content.mjs`, `scene_reducer.mjs`, `feature_bus.mjs`, `feature_replayer.mjs`, `binding_engine.mjs`, `p5_sandbox.mjs`.
 
 ### 12.3 Integration
 
@@ -498,7 +524,6 @@ feed-looks-back-spike/
     │   ├── stage.html               [NEW]
     │   ├── scene_reducer.mjs        [NEW]
     │   ├── feature_bus.mjs          [NEW]
-    │   ├── web_audio.mjs            [NEW]
     │   ├── feature_replayer.mjs     [NEW]
     │   ├── ws_client.mjs            [NEW]
     │   ├── binding_engine.mjs       [NEW]
@@ -532,6 +557,7 @@ python/
 - `ws` — WebSocket server (stage_server)
 - `playwright` — headless self-frame capture
 - `sharp` — mood-board image downscaling
+- `p5` — vendored locally. stage_server reads `node_modules/p5/lib/p5.min.js` once at startup and inlines it into each sketch iframe's srcdoc (see §7.3). No CDN dependency during performance; satisfies iframe `connect-src 'none'`.
 
 Python (in the existing `ambi_audio` conda env per memory):
 - `websockets` (WS client)
@@ -550,7 +576,7 @@ Deliverables: `stage_server.mjs`, `patch_protocol.mjs`, `patch_emitter.mjs`, `pa
 Deliverables: `sanitize.mjs`, `image_resolver.mjs`, `operator_views.mjs` (with tests migrated). `render_html.mjs` deleted at end of phase. Stage becomes the primary output; `operator_views` still writes a parallel `live_monitor.html` for operator observability. **Exit criterion:** 131 tests still green across their new homes; operator view looks right.
 
 **Phase 3 — Audio pipeline.**
-Deliverables: `feature_bus.mjs`, `web_audio.mjs`, `feature_replayer.mjs`, Python `stream_features.py` (both modes). Features flow but nothing binds yet. **Exit criterion:** feature_bus populated under both modes; values plausible on a known audio sample.
+Deliverables: `feature_bus.mjs`, `feature_replayer.mjs`, `ws_client.mjs` feature channel, Python `stream_features.py` (both modes — `--mode precompute` and `--mode live`). Features flow but nothing binds yet. **Exit criterion:** feature_bus populated under both modes; values plausible on a known audio sample; offline-vs-live feature distribution identical for the same source audio (since Python is the single extractor).
 
 **Phase 4 — Reactivity.**
 Deliverables: `binding_easing.mjs`, `binding_engine.mjs`, reactivity param on existing tools, prompt updates. **Exit criterion:** first audio-reactive visuals observable in a dry-run; real-API 3-cycle smoke produces at least one reactive element per cycle.
