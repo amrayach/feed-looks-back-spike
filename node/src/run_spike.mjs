@@ -587,6 +587,7 @@ export function startFeatureProducer({
   mode,
   runId,
   wsUrl,
+  wsToken = null,
   producer,
   spawnImpl = null,
   pythonBin = DEFAULT_PYTHON_BIN,
@@ -595,9 +596,23 @@ export function startFeatureProducer({
 } = {}) {
   if (mode !== "live" || producer !== "python") return null;
   const args = [scriptPath, "--mode", "live", "--ws-url", wsUrl, "--run-id", runId];
+  if (wsToken) args.push("--ws-token", wsToken);
   if (device) args.push("--device", device);
   if (spawnImpl) return spawnImpl(pythonBin, args);
   const child = spawn(pythonBin, args, { stdio: "inherit" });
+  // Surface spawn failures to stderr so the operator can diagnose (e.g.
+  // missing Python binary, missing script). Do not crash run_spike on
+  // child error — precompute runs don't need the producer anyway.
+  child.on("error", (err) => {
+    process.stderr.write(`feature_producer spawn error: ${err?.message ?? err}\n`);
+  });
+  child.on("exit", (code, signal) => {
+    if (code !== 0 && signal !== "SIGTERM" && signal !== "SIGKILL") {
+      process.stderr.write(
+        `feature_producer exited unexpectedly (code=${code}, signal=${signal})\n`,
+      );
+    }
+  });
   return {
     stop() {
       try {
@@ -686,10 +701,14 @@ async function run(options) {
   // streaming live audio in a dry-run that fabricates cycle packets).
   const resolvedProducer = featureProducer ?? (stageMode === "live" && mode === "real" ? "python" : "none");
   const wsUrl = `ws://${stageServer.host}:${stageServer.port}/ws`;
+  const wsToken = typeof stageServer.getFeatureProducerToken === "function"
+    ? stageServer.getFeatureProducerToken()
+    : null;
   const featureProducerHandle = startFeatureProducerImpl({
     mode: stageMode,
     runId,
     wsUrl,
+    wsToken,
     producer: resolvedProducer,
   });
 
@@ -953,15 +972,6 @@ async function run(options) {
         (finalHtmlPath ? `Final HTML: ${finalHtmlPath}\n` : ""),
     );
 
-    if (featureProducerHandle) {
-      try {
-        featureProducerHandle.stop();
-      } catch {
-        // best-effort; child may have already exited
-      }
-    }
-    await stageServer.close();
-
     return {
       runId,
       runDir,
@@ -973,6 +983,22 @@ async function run(options) {
       interrupted: interruptState.requested,
     };
   } finally {
+    // Cleanup must happen on ANY exit path (exception, normal return, or
+    // interrupt) — otherwise the Python child keeps the audio device held
+    // and the stage server leaks its port binding. Guard each step so a
+    // failure in one cleanup step doesn't skip the next.
+    if (featureProducerHandle) {
+      try {
+        featureProducerHandle.stop();
+      } catch {
+        // child may have already exited
+      }
+    }
+    try {
+      await stageServer.close();
+    } catch {
+      // server may already be closed
+    }
     cleanupSigintHandler();
   }
 }
@@ -1342,6 +1368,7 @@ async function runSelfTests() {
       mode: "live",
       runId: "feat123",
       wsUrl: "ws://127.0.0.1:9999/ws",
+      wsToken: "tok_abc_123",
       producer: "python",
       spawnImpl: fakeSpawn,
       pythonBin: "/opt/python/bin/python",
@@ -1354,6 +1381,9 @@ async function runSelfTests() {
     assert.equal(calls[0].args[1], "--mode");
     assert.equal(calls[0].args[2], "live");
     assert.deepEqual(calls[0].args.slice(3, 7), ["--ws-url", "ws://127.0.0.1:9999/ws", "--run-id", "feat123"]);
+    const tokenIdx = calls[0].args.indexOf("--ws-token");
+    assert.ok(tokenIdx >= 0, "expected --ws-token in args");
+    assert.equal(calls[0].args[tokenIdx + 1], "tok_abc_123");
     assert.equal(calls[1].cmd, "STOP");
   });
 

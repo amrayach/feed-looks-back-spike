@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
 
 import { WebSocketServer } from "ws";
 
@@ -66,6 +67,7 @@ export async function createStageServer({
   let currentContext = null;
   let patchCache = null;
   let lastLifecyclePatch = null;
+  let featureProducerToken = null;
   const clientMeta = new Map();
 
   const server = createServer((req, res) => {
@@ -173,12 +175,23 @@ export async function createStageServer({
           ws.close();
           return;
         }
-        const role = parsed.role === "feature_producer" ? "feature_producer" : "operator";
+        const requestedRole = parsed.role === "feature_producer" ? "feature_producer" : "operator";
+        if (requestedRole === "feature_producer") {
+          // Per-run token gate: operator browsers are read-only, but any
+          // localhost process could otherwise claim feature_producer just
+          // by knowing run_id + mode. run_spike generates the token and
+          // forwards it only to the Python child it spawns.
+          if (!featureProducerToken || parsed.token !== featureProducerToken) {
+            sendJson(ws, { type: "error", message: "feature_producer token invalid or missing" });
+            ws.close();
+            return;
+          }
+        }
         meta.accepted = true;
         meta.runId = parsed.run_id;
         meta.mode = parsed.mode;
-        meta.role = role;
-        if (role === "operator") {
+        meta.role = requestedRole;
+        if (requestedRole === "operator") {
           await sendReplay(ws);
         }
         return;
@@ -230,6 +243,7 @@ export async function createStageServer({
       currentContext = { runId, mode, runDir };
       patchCache = createPatchCache({ persistPath: join(runDir, "patch_cache.json") });
       lastLifecyclePatch = null;
+      featureProducerToken = randomBytes(16).toString("hex");
       await patchCache.load();
       for (const ws of clientMeta.keys()) {
         try {
@@ -238,6 +252,10 @@ export async function createStageServer({
           // ignore stale client close failures
         }
       }
+    },
+
+    getFeatureProducerToken() {
+      return featureProducerToken;
     },
 
     async broadcastPatch(patch) {
@@ -456,13 +474,15 @@ if (isDirectNodeExecution) {
     }
   });
 
-  await t("feature_producer role sends feature messages that reach operator clients", async () => {
+  await t("feature_producer role sends feature messages that reach operator clients when token matches", async () => {
     const nodeRoot = freshNodeRoot("flb-stage-server-feature");
     const runDir = join(nodeRoot, "output", "run_feat");
     mkdirSync(runDir, { recursive: true });
     const server = await createStageServer({ nodeRoot });
     try {
       await server.setCurrentRunContext({ runId: "feat", mode: "live", runDir });
+      const token = server.getFeatureProducerToken();
+      assert.ok(token && token.length >= 16, "token should be set after setCurrentRunContext");
 
       const operatorMessages = [];
       const operatorWs = await new Promise((resolvePromise, rejectPromise) => {
@@ -481,7 +501,13 @@ if (isDirectNodeExecution) {
       await new Promise((resolvePromise, rejectPromise) => {
         const producer = new WebSocket(`ws://${server.host}:${server.port}/ws`);
         producer.once("open", () => {
-          producer.send(JSON.stringify({ type: "hello", role: "feature_producer", run_id: "feat", mode: "live" }));
+          producer.send(JSON.stringify({
+            type: "hello",
+            role: "feature_producer",
+            run_id: "feat",
+            mode: "live",
+            token,
+          }));
           producer.send(JSON.stringify({ channel: "feature", feature: "amplitude", value: 0.42 }));
         });
         setTimeout(() => {
@@ -502,6 +528,48 @@ if (isDirectNodeExecution) {
       assert.equal(featureMessages.length, 1);
       assert.equal(featureMessages[0].feature, "amplitude");
       assert.equal(featureMessages[0].value, 0.42);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("feature_producer without a valid token is rejected", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-feature-notoken");
+    const runDir = join(nodeRoot, "output", "run_notoken");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "notoken", mode: "live", runDir });
+      const errors = [];
+      await new Promise((resolvePromise, rejectPromise) => {
+        const producer = new WebSocket(`ws://${server.host}:${server.port}/ws`);
+        producer.once("open", () => {
+          producer.send(JSON.stringify({
+            type: "hello",
+            role: "feature_producer",
+            run_id: "notoken",
+            mode: "live",
+            token: "wrong-token",
+          }));
+        });
+        producer.on("message", (raw) => {
+          const msg = JSON.parse(String(raw));
+          if (msg?.type === "error") errors.push(msg.message);
+        });
+        producer.on("close", () => resolvePromise());
+        setTimeout(() => {
+          try {
+            producer.close();
+          } catch {
+            // ignore
+          }
+        }, 300);
+        producer.once("error", rejectPromise);
+      });
+      assert.ok(
+        errors.some((m) => /token/i.test(m)),
+        `expected token-rejection error, got ${JSON.stringify(errors)}`,
+      );
     } finally {
       await server.close();
     }

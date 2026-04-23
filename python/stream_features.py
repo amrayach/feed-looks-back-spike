@@ -234,6 +234,7 @@ def run_live(
     run_id: str,
     device: str | None,
     frame_rate_hz: int = FRAME_RATE_HZ,
+    ws_token: str | None = None,
 ) -> int:
     """
     Open a sounddevice input on the selected device, run per-chunk DSP,
@@ -276,16 +277,15 @@ def run_live(
 
     async def sender():
         async with websockets.connect(ws_url, open_timeout=5) as ws:
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "hello",
-                        "role": "feature_producer",
-                        "run_id": run_id,
-                        "mode": "live",
-                    }
-                )
-            )
+            hello = {
+                "type": "hello",
+                "role": "feature_producer",
+                "run_id": run_id,
+                "mode": "live",
+            }
+            if ws_token:
+                hello["token"] = ws_token
+            await ws.send(json.dumps(hello))
             loop = asyncio.get_event_loop()
             while not stop_event.is_set():
                 try:
@@ -318,13 +318,30 @@ def run_live(
         loop = asyncio.get_running_loop()
         _install_signal_handlers(loop)
         send_task = asyncio.create_task(sender())
+
+        async def watch_sender():
+            # If the sender exits (WS closed, handshake failed, connect
+            # refused, etc.) before stop_event is set, set stop_event so
+            # main() unblocks instead of hanging indefinitely holding the
+            # audio device open.
+            try:
+                await send_task
+            except asyncio.CancelledError:
+                return
+            except Exception as err:  # noqa: BLE001
+                print(f"stream_features sender exited: {err}", file=sys_mod.stderr)
+            finally:
+                stop_event.set()
+
+        watch_task = asyncio.create_task(watch_sender())
         await stop_event.wait()
         send_task.cancel()
-        try:
-            await send_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            # sender exits cleanly on cancel; websocket close handled by context mgr
-            pass
+        watch_task.cancel()
+        for task in (send_task, watch_task):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
     try:
         with sd.InputStream(
@@ -400,6 +417,7 @@ def cli() -> int:
     parser.add_argument("--input", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--ws-url", dest="ws_url")
+    parser.add_argument("--ws-token", dest="ws_token")
     parser.add_argument("--run-id", dest="run_id")
     parser.add_argument("--device")
     parser.add_argument(
@@ -429,6 +447,7 @@ def cli() -> int:
             run_id=args.run_id,
             device=args.device,
             frame_rate_hz=args.frame_rate_hz,
+            ws_token=args.ws_token,
         )
 
     return 2
