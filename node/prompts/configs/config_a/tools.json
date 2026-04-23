@@ -1,0 +1,161 @@
+[
+  {
+    "name": "addText",
+    "description": "Place a typographic fragment on the scene. Use short phrases (1–8 words) that carry meaning without being explanatory. Text is well-suited to testimonial, sustained, low-onset-density moments. Returns the new element_id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "The text to place. Short fragment, 1–8 words. Examples: \"after\", \"the encampment\", \"what remains\"."
+        },
+        "position": {
+          "type": "string",
+          "description": "Free-form position string. Examples: \"lower-left\", \"center\", \"upper-right\", \"left edge\", \"background\"."
+        },
+        "style": {
+          "type": "string",
+          "description": "Free-form style hint. Examples: \"serif, large\", \"light weight, small\", \"uppercase, tight tracking\". The renderer interprets this."
+        },
+        "lifetime_s": {
+          "type": "number",
+          "description": "Optional. Omit this field and the text persists for the entire performance — this is almost always what you want, because testimony accumulates. Supply an explicit number ONLY for deliberately ephemeral text (a passing interjection the scene should not keep). There is no implicit timeout; silence at this field means permanence."
+        }
+      },
+      "required": ["content", "position", "style"]
+    }
+  },
+  {
+    "name": "addSVG",
+    "description": "Place a symbolic or abstract drawn form on the scene. You generate real inline SVG markup for the renderer to place. Use forms when the music has structural events (aug2 leap, tahwil, phrase climax). Returns the new element_id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "svg_markup": {
+          "type": "string",
+          "description": "Valid, self-contained inline SVG markup. Include an <svg> root with a viewBox. The drawing may be small, band-scale, or fullscreen; it may use layered paths, gradients, masks, clip paths, local symbols/use references, and SVG filter effects when the music asks for weight or density. Slow inline SVG animation is allowed when musically motivated: cycles of at least 4 seconds, one or two animated attributes, no decorative motion. No scripts, no external assets, no raster embeds, no foreignObject, and no event handlers. Favor clear inline attributes."
+        },
+        "position": {
+          "type": "string",
+          "description": "Free-form position string. Examples: \"lower-right\", \"center\", \"left edge\", \"horizontal band at mid-height\"."
+        },
+        "lifetime_s": {
+          "type": "number",
+          "description": "Optional. Omit this field and the SVG is given a default 35-second presence so it has time to be read. Supply an explicit longer value (60–120s) for forms that should anchor a passage — a sustained horizon, a held column, an atmospheric wash. Supply a shorter value only for fast, deliberately transient gestures like an angular break that the scene is meant to forget."
+        },
+        "semantic_label": {
+          "type": "string",
+          "description": "Short human-readable phrase (3–6 words) describing what the SVG is compositionally. Required for scene-state memory across cycles. Examples: \"thin vertical line left\", \"angular break lower-right\", \"slow horizontal band\"."
+        }
+      },
+      "required": ["svg_markup", "position", "semantic_label"]
+    }
+  },
+  {
+    "name": "addImage",
+    "description": "Request an image via search query. The query is the compositional act — what you choose to ask for is the artifact. Use sparingly, roughly once every minute or two of performance. Never immediately after the previous image has faded. Returns the new element_id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query. Be deliberate — avoid generic terms like \"Arabic music\" or \"desert\". Reach for texture, place, quality: \"threshold light through a doorway\", \"stone wall in low sun\", \"salt flats at dusk\"."
+        },
+        "position": {
+          "type": "string",
+          "description": "Free-form position string. Examples: \"background\", \"upper-right quarter\", \"full bleed\", \"small inset, lower-left\"."
+        },
+        "lifetime_s": {
+          "type": "number",
+          "description": "Optional. Omit this field and the image persists for the entire performance — this is almost always what you want, because images give the scene somewhere to sit. Supply an explicit value only for an image that is deliberately a flash — a single cycle glimpse the scene is meant to release."
+        }
+      },
+      "required": ["query", "position"]
+    }
+  },
+  {
+    "name": "setBackground",
+    "description": "Shift the atmospheric background. Provide a real CSS background value. Backgrounds persist indefinitely until you change them with another setBackground call — there is no automatic fade. Use rarely: tahwil, extended silence, when accumulated scene density demands a new absorbing atmosphere.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "css_background": {
+          "type": "string",
+          "description": "Valid CSS background value, not prose. Examples: \"radial-gradient(circle at 30% 20%, rgba(180,140,90,0.45), rgba(10,10,12,0.95) 70%)\", \"linear-gradient(180deg, #201814 0%, #090909 100%)\"."
+        }
+      },
+      "required": ["css_background"]
+    }
+  },
+  {
+    "name": "fadeElement",
+    "description": "Reduce or remove an existing element from the scene. Use as actively as the add tools — fading IS composition. Element IDs come from the current scene state summary. Unknown IDs return an error tool result that you will see on the next cycle. Also accepts a composition_group_id (e.g. \"group_0003\") to fade every member of that composition group in one call.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "element_id": {
+          "type": "string",
+          "description": "The element_id of the element to fade (e.g. \"elem_0004\") or the composition_group_id of a group to fade as a unit (e.g. \"group_0003\"). Must match an id visible in the current scene state summary."
+        }
+      },
+      "required": ["element_id"]
+    }
+  },
+  {
+    "name": "addCompositeScene",
+    "description": "Place 2 to 5 related visual elements in one call, grouped as a composition. Use this when the music asks for a layered response — multiple elements entering together that belong to the same moment. Each element in the group gets its own element_id but shares a composition_group_id that links them. The group can later be faded together by calling fadeElement with the composition_group_id.\n\nUse this tool for moments of sustained intensity, for climaxes, for tahwil arrivals where the scene needs to commit to a new register, or for atmospheric foundations where a text + image + svg combination grounds a new section. Do not use it for every cycle — a scene of entirely composite groups is as monotonous as a scene of entirely single elements.\n\nEach element in the 'elements' array follows the same structure as the single-element tools: type is 'text', 'svg', or 'image'; other fields match the individual tool's required fields for that type.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "elements": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["text", "svg", "image"]
+              },
+              "content": {
+                "type": "string",
+                "description": "For type='text': the text content. Required when type is 'text'."
+              },
+              "svg_markup": {
+                "type": "string",
+                "description": "For type='svg': the SVG markup. Required when type is 'svg'."
+              },
+              "query": {
+                "type": "string",
+                "description": "For type='image': the image search query. Required when type is 'image'."
+              },
+              "semantic_label": {
+                "type": "string",
+                "description": "For type='svg': short human-readable phrase. Required when type is 'svg'."
+              },
+              "position": {
+                "type": "string",
+                "description": "Free-form position string (e.g., 'lower-left', 'center-right')."
+              },
+              "style": {
+                "type": "string",
+                "description": "For type='text': free-form style hints. Optional."
+              }
+            },
+            "required": ["type", "position"]
+          }
+        },
+        "group_label": {
+          "type": "string",
+          "description": "Short human-readable phrase (3-8 words) describing the compositional intent of this group. E.g., 'the room someone just left', 'climax response', 'threshold arrival'. Used in scene state summary so you can recognize your own composition groups across cycles."
+        },
+        "lifetime_s": {
+          "type": "number",
+          "description": "Lifetime in seconds for the whole group. Optional; defaults to the max default-lifetime of the element types in the group."
+        }
+      },
+      "required": ["elements", "group_label"]
+    }
+  }
+]

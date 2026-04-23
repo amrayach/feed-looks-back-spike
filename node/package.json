@@ -1,0 +1,23 @@
+{
+  "name": "feed-looks-back-node",
+  "version": "0.1.0",
+  "description": "Feed Looks Back — Session 2 Node runner. Reads cycle JSONs from the Python pipeline, calls Claude Opus 4.7 with each cycle, maintains scene state, renders final HTML.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "run": "node src/run_spike.mjs",
+    "dry-run": "node src/run_spike.mjs ../corpus --config config_a --dry-run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "htmlparser2": "^12.0.0"
+  }
+}
