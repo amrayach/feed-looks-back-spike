@@ -783,6 +783,15 @@ if (isDirectNodeExecution) {
   const state = buildSyntheticState();
   const summary = buildSyntheticSummary();
 
+  t("escapeHtml converts the five HTML-sensitive characters and handles null/undefined/numbers", () => {
+    assert.equal(escapeHtml("&<>\"'"), "&amp;&lt;&gt;&quot;&#39;");
+    assert.equal(escapeHtml("plain text 123"), "plain text 123");
+    assert.equal(escapeHtml(null), "");
+    assert.equal(escapeHtml(undefined), "");
+    assert.equal(escapeHtml(42), "42");
+    assert.equal(escapeHtml("<script>alert('xss')</script>"), "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;");
+  });
+
   t("renderHtmlString produces a non-empty string that starts with a DOCTYPE", () => {
     const html = renderHtmlString({ state, summary });
     assert.equal(typeof html, "string");

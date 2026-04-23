@@ -1,7 +1,7 @@
 # Session I — Design Handoff
 
 **Date:** 2026-04-23
-**Status:** Design locked pending final user approval. Ready for implementation.
+**Status:** Historical design-session snapshot. Phases 1 & 2 have landed (commits `60f4b21` → `20d4222` → `73a1d60` → `901dec8`); `render_html.mjs` no longer exists and its surface is now spread across `sanitize.mjs`, `image_resolver.mjs`, `scene_layout.mjs`, `operator_views.mjs`, and browser `scene_reducer.mjs`. For current-state facts, use `git log` in the spike repo and `docs/superpowers/plans/`; the file inventories below describe pre-implementation context only.
 **Authoritative spec:** `docs/superpowers/specs/2026-04-23-session-i-live-reactive-stage-design.md` (645 lines, commit `b4e792e`)
 
 This handoff summarizes the design session so the next Claude session can pick up without re-reading the full conversation. The spec is the source of truth — this document is the lens onto how it got there, what was deferred, and what to do first.
@@ -195,9 +195,12 @@ adapter + prompt-caching.md, Zod discipline). Nothing else is merged.
 FIRST ACTION: invoke superpowers:writing-plans to produce the Phase 1
 implementation plan. Phase 1 scope and exit criterion are in spec §14.
 Before generating the plan, verify:
-  - All 131 existing inline tests still pass (run each of
-    scene_state.mjs, tool_handlers.mjs, render_html.mjs, run_spike.mjs
-    directly with node)
+  - All existing inline tests still pass (run each of scene_state.mjs,
+    tool_handlers.mjs, sanitize.mjs, image_resolver.mjs, scene_layout.mjs,
+    operator_views.mjs, patch_emitter.mjs, patch_protocol.mjs,
+    patch_cache.mjs, stage_server.mjs, image_fetch.mjs, run_spike.mjs
+    and browser/scene_reducer.mjs, browser/bootstrap.mjs,
+    browser/ws_client.mjs directly with node — 177/177 as of 901dec8)
   - pnpm install succeeds in node/
   - git status shows working tree clean except intentional untracked
 
