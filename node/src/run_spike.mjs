@@ -18,6 +18,13 @@ import {
 import { applyToolCallDetailed } from "./tool_handlers.mjs";
 import { renderFinalHtml, renderLiveHtml } from "./operator_views.mjs";
 import { createStageServer } from "./stage_server.mjs";
+import {
+  loadMoodBoard,
+  buildMoodBoardSystemBlocks,
+  shouldCaptureSelfFrame,
+  buildSelfFrameUserBlocks,
+} from "./image_content.mjs";
+import { createSelfFrameCapturer } from "./self_frame.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NODE_ROOT = resolve(__dirname, "..");
@@ -667,6 +674,8 @@ async function run(options) {
     processLike = process,
     featureProducer = null,
     startFeatureProducerImpl = startFeatureProducer,
+    createSelfFrameCapturerImpl = createSelfFrameCapturer,
+    loadMoodBoardImpl = loadMoodBoard,
   } = options;
 
   const cycles = listCycleFiles(corpusDir).filter((c) => {
@@ -696,9 +705,6 @@ async function run(options) {
   await stageServer.setCurrentRunContext({ runId, mode: stageMode, runDir });
   const operatorUrl = stageServer.getOperatorUrl({ runId, mode: stageMode });
 
-  // Phase 3: spawn the Python feature producer in live stage mode only.
-  // Default is 'python' when stageMode==='live' and mode==='real' (no point
-  // streaming live audio in a dry-run that fabricates cycle packets).
   const resolvedProducer = featureProducer ?? (stageMode === "live" && mode === "real" ? "python" : "none");
   const wsUrl = `ws://${stageServer.host}:${stageServer.port}/ws`;
   const wsToken = typeof stageServer.getFeatureProducerToken === "function"
@@ -712,6 +718,20 @@ async function run(options) {
     producer: resolvedProducer,
   });
 
+  let moodBoardBlocks = [];
+  try {
+    const moodBoard = await loadMoodBoardImpl();
+    moodBoardBlocks = buildMoodBoardSystemBlocks(moodBoard);
+    if (moodBoardBlocks.length > 0) {
+      process.stdout.write(`Mood board loaded: ${moodBoard.imageBlocks.length} images.\n`);
+    }
+  } catch (err) {
+    process.stdout.write(`WARN: mood board load failed: ${err?.message ?? err}\n`);
+  }
+  const selfFrameCapturer = createSelfFrameCapturerImpl({ stageUrl: operatorUrl });
+  let pendingSelfFrameBlocks = [];
+  let cyclesSinceLastImage = 0;
+  let lastSelfFrameErrorAt = -Infinity;
   const interruptState = { requested: false, signal: null, announced: false };
   const cleanupSigintHandler = registerSigintHandler({
     processLike,
@@ -798,7 +818,10 @@ async function run(options) {
           mediumRules,
           tools,
           model,
+          moodBoardBlocks,
+          selfFrameUserBlocks: pendingSelfFrameBlocks,
         });
+        pendingSelfFrameBlocks = [];                              // consumed — reset after use
 
         await stageServer.broadcastPatch({
           type: "cycle.begin",
@@ -876,6 +899,25 @@ async function run(options) {
         activeCount = state.elements.filter((e) => !e.faded).length;
         cost = mode === "real" ? computeCost(cycleResult.usage) : null;
         await stageServer.broadcastPatch({ type: "cycle.end" });
+
+        // Phase 5 — evaluate self-frame triggers and capture for the next cycle's packet.
+        pendingSelfFrameBlocks = await maybeCaptureSelfFrame({
+          cycleResult,
+          cycle,
+          cycleIndex: cycle?.cycle_index ?? c.index,
+          activeCount,
+          capturer: selfFrameCapturer,
+          onIncrementDrought: () => { cyclesSinceLastImage += 1; },
+          onResetDrought: () => { cyclesSinceLastImage = 0; },
+          getCyclesSinceLastImage: () => cyclesSinceLastImage,
+          onWarn: (msg) => {
+            const now = Date.now();
+            if (now - lastSelfFrameErrorAt > 5000) {
+              process.stdout.write(`WARN: self-frame capture failed: ${msg}\n`);
+              lastSelfFrameErrorAt = now;
+            }
+          },
+        });
       } catch (err) {
         status = CYCLE_STATUS.RESPONSE_PARSE_FAILURE;
         errorInfo = {
@@ -884,6 +926,9 @@ async function run(options) {
         };
         activeCount = state.elements.filter((e) => !e.faded).length;
         await stageServer.broadcastPatch({ type: "cycle.end" });
+        // Error path — still advance the drought counter; never capture.
+        cyclesSinceLastImage += 1;
+        pendingSelfFrameBlocks = [];
       }
 
       const statusLine = formatCycleStatus({
@@ -999,7 +1044,56 @@ async function run(options) {
     } catch {
       // server may already be closed
     }
+    try {
+      await selfFrameCapturer.close();
+    } catch {
+      // capturer may already be closed or never opened
+    }
     cleanupSigintHandler();
+  }
+}
+
+async function maybeCaptureSelfFrame({
+  cycleResult,
+  cycle,
+  cycleIndex,
+  activeCount,
+  capturer,
+  onIncrementDrought,
+  onResetDrought,
+  getCyclesSinceLastImage,
+  onWarn,
+}) {
+  try {
+    const cyclePatches = cycleResult.patches ?? [];
+    const anImageWasAdded = cyclePatches.some(
+      (p) => p?.type === "element.add" && p?.element?.type === "image",
+    );
+    if (anImageWasAdded) onResetDrought();
+    else onIncrementDrought();
+
+    const hijazTahwilFired = Boolean(cycle?.hijaz_state?.tahwil_fired);
+    const triggered = shouldCaptureSelfFrame({
+      cycleIndex,
+      activeCount,
+      cyclesSinceLastImage: getCyclesSinceLastImage(),
+      hijazTahwilFired,
+    });
+    if (!triggered) return [];
+
+    const pngBuffer = await capturer.capture();
+    return buildSelfFrameUserBlocks({
+      pngBuffer,
+      metadata: {
+        previousCycleIndex: cycleIndex,
+        activeCount,
+        dominantType: null,
+        backgroundAgeS: 0,
+      },
+    });
+  } catch (err) {
+    onWarn(err?.message ?? String(err));
+    return [];
   }
 }
 
@@ -1436,6 +1530,111 @@ async function runSelfTests() {
     const deviceIdx = args.indexOf("--device");
     assert.ok(deviceIdx >= 0, "expected --device in args");
     assert.equal(args[deviceIdx + 1], "Audient iD14");
+  });
+
+  await t("run invokes self-frame capturer on trigger cycles (drought + every-5th)", async () => {
+    const tempRoot = freshTempRoot("run-spike-self-frame");
+    const corpusDir = join(tempRoot, "corpus");
+    const outputRoot = join(tempRoot, "output");
+    writeTestCorpus(corpusDir, 6);                                // cycles 0..5 inclusive
+
+    const capturedInvocations = [];
+    const mockPng = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    const mockCapturer = {
+      capture: async () => {
+        capturedInvocations.push(Date.now());
+        return mockPng;
+      },
+      close: async () => {},
+    };
+
+    const packetsObserved = [];
+    const mockCallOpus = async (_client, packet) => {
+      packetsObserved.push(packet);
+      return {
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "no-op" }],
+        usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 50 },
+      };
+    };
+
+    await run({
+      corpusDir,
+      configName: "config_a",
+      cyclesRange: null,
+      mode: "real",
+      callOpusImpl: mockCallOpus,
+      makeClientImpl: () => ({ mocked: true }),
+      outputRoot,
+      hijazBaseOverride: "self-test hijaz base",
+      mediumRulesOverride: "self-test medium rules",
+      toolsOverride: [],
+      modelOverride: "claude-opus-4-7",
+      sleepImpl: async () => {},
+      createStageServerImpl: async () => makeStageServerStub(),
+      createSelfFrameCapturerImpl: () => mockCapturer,
+    });
+
+    // With 6 silent cycles (no image element.adds): cyclesSinceLastImage increments
+    // each cycle. Capture fires when either:
+    //   - cycleIndex % 5 === 0 && cycleIndex > 0  → cycle 5 (every-5th baseline)
+    //   - cyclesSinceLastImage > 4                → after cycle 4 (5th increment)
+    // So at cycle 4's end, drought reaches 5 → trigger fires (1st capture).
+    // At cycle 5's end, drought is now 6 AND every-5th — trigger still fires (2nd capture).
+    assert.ok(
+      capturedInvocations.length >= 2,
+      `expected ≥2 captures on drought + every-5th triggers, got ${capturedInvocations.length}`,
+    );
+
+    // Packet for cycle 0 should have no self-frame (first cycle, no prior).
+    assert.equal(typeof packetsObserved[0].messages[0].content, "string");
+
+    // Some later packet should carry a self-frame user-block array.
+    const sawSelfFrame = packetsObserved.some(
+      (p) => Array.isArray(p.messages[0].content) && p.messages[0].content.some((b) => b.type === "image"),
+    );
+    assert.ok(sawSelfFrame, "expected at least one packet to carry a self-frame image block");
+  });
+
+  await t("run does not crash when self-frame capturer throws (degrades gracefully)", async () => {
+    const tempRoot = freshTempRoot("run-spike-self-frame-error");
+    const corpusDir = join(tempRoot, "corpus");
+    const outputRoot = join(tempRoot, "output");
+    writeTestCorpus(corpusDir, 6);
+
+    const failingCapturer = {
+      capture: async () => { throw new Error("chromium unavailable"); },
+      close: async () => {},
+    };
+
+    const mockCallOpus = async () => ({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "no-op" }],
+      usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 50 },
+    });
+
+    const { summary } = await run({
+      corpusDir,
+      configName: "config_a",
+      cyclesRange: null,
+      mode: "real",
+      callOpusImpl: mockCallOpus,
+      makeClientImpl: () => ({ mocked: true }),
+      outputRoot,
+      hijazBaseOverride: "self-test hijaz base",
+      mediumRulesOverride: "self-test medium rules",
+      toolsOverride: [],
+      modelOverride: "claude-opus-4-7",
+      sleepImpl: async () => {},
+      createStageServerImpl: async () => makeStageServerStub(),
+      createSelfFrameCapturerImpl: () => failingCapturer,
+    });
+
+    assert.equal(summary.per_cycle.length, 6);
+    assert.equal(summary.interrupted, false);
   });
 
   process.stdout.write(
