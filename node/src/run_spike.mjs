@@ -15,7 +15,7 @@ import {
   snapshotCycle,
 } from "./scene_state.mjs";
 import { applyToolCallDetailed } from "./tool_handlers.mjs";
-import { renderFinalHtml, renderLiveHtml } from "./render_html.mjs";
+import { renderFinalHtml, renderLiveHtml } from "./operator_views.mjs";
 import { createStageServer } from "./stage_server.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

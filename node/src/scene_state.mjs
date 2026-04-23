@@ -304,7 +304,7 @@ function pluralize(n, word) {
 // Map a free-form Opus position string to one of the nine SPATIAL_REGIONS.
 // Strings lacking any row or column keyword fall through to middle-center,
 // which matches the broad "background" / "horizontal-band" behaviour of
-// render_html.classifyPosition without forcing a fixed vocabulary on Opus.
+// scene layout classification without forcing a fixed vocabulary on Opus.
 function classifyPositionToRegion(position) {
   const p = (position ?? "").toString().toLowerCase();
   const row = /upper|top/.test(p)

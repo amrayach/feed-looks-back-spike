@@ -78,6 +78,8 @@ export async function createStageServer({
         filePath = safeResolve(browserRoot, url.pathname.slice("/browser/".length));
       } else if (url.pathname === "/shared/patch_protocol.mjs") {
         filePath = join(srcRoot, "patch_protocol.mjs");
+      } else if (url.pathname === "/shared/scene_layout.mjs") {
+        filePath = join(srcRoot, "scene_layout.mjs");
       } else if (url.pathname.startsWith("/vendor/zod/")) {
         filePath = safeResolve(zodRoot, url.pathname.slice("/vendor/zod/".length));
       } else {
@@ -280,6 +282,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     write(join(root, "browser", "stage.html"), "<!doctype html><html><body>stage</body></html>");
     write(join(root, "browser", "bootstrap.mjs"), "export const ok = true;\n");
     write(join(root, "src", "patch_protocol.mjs"), "export const ok = true;\n");
+    write(join(root, "src", "scene_layout.mjs"), "export const ok = true;\n");
     write(join(root, "node_modules", "zod", "index.js"), "export const z = {};\n");
     write(join(root, "image_cache", "test.jpg"), "jpg");
     return root;
@@ -291,11 +294,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     try {
       const stage = await requestText(`http://${server.host}:${server.port}/`);
       const shared = await requestText(`http://${server.host}:${server.port}/shared/patch_protocol.mjs`);
+      const layout = await requestText(`http://${server.host}:${server.port}/shared/scene_layout.mjs`);
       const image = await requestText(`http://${server.host}:${server.port}/image_cache/test.jpg`);
+      const forbidden = await requestText(`http://${server.host}:${server.port}/shared/not_allowed.mjs`);
       assert.equal(stage.status, 200);
       assert.match(stage.body, /stage/);
       assert.equal(shared.status, 200);
+      assert.equal(layout.status, 200);
       assert.equal(image.status, 200);
+      assert.equal(forbidden.status, 404);
     } finally {
       await server.close();
     }

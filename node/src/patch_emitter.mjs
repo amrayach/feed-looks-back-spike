@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 
 import { fetchImage } from "./image_fetch.mjs";
-import { sanitizeCssBackground, isSvgMarkupValid } from "./render_html.mjs";
+import { sanitizeCssBackground, isSvgMarkupValid } from "./sanitize.mjs";
 
 const DEFAULT_FADE_DURATION_MS = 400;
 
