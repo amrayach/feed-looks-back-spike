@@ -46,6 +46,8 @@
       import { loadBootstrap } from "/browser/bootstrap.mjs";
       import { createSceneReducer } from "/browser/scene_reducer.mjs";
       import { createWsClient } from "/browser/ws_client.mjs";
+      import { createFeatureBus } from "/browser/feature_bus.mjs";
+      import { createFeatureReplayer } from "/browser/feature_replayer.mjs";
 
       const bootstrap = loadBootstrap({ locationLike: window.location, documentLike: document });
       const mount = document.getElementById("stage-root");
@@ -57,6 +59,9 @@
         audio.remove();
       }
 
+      const bus = createFeatureBus();
+      window.__featureBus = bus;
+
       const reducer = createSceneReducer({
         documentLike: document,
         mount,
@@ -67,10 +72,21 @@
         run_id: bootstrap.run_id,
         mode: bootstrap.mode,
         onPatch: (patch) => reducer.applyPatch(patch),
+        onFeature: (feature, value) => bus.dispatch(feature, value),
         onStatus: (event) => {
           if (event.type === "error") console.error("[stage ws]", event.message);
         },
       });
+
+      if (bootstrap.mode === "precompute") {
+        const replayer = createFeatureReplayer({
+          bus,
+          audioEl: audio,
+          runId: bootstrap.run_id,
+          onError: (err) => console.error("[feature_replayer]", err),
+        });
+        replayer.start();
+      }
     </script>
   </body>
 </html>
