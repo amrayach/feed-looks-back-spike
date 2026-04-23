@@ -83,6 +83,8 @@ export async function createStageServer({
         filePath = join(srcRoot, "patch_protocol.mjs");
       } else if (url.pathname === "/shared/scene_layout.mjs") {
         filePath = join(srcRoot, "scene_layout.mjs");
+      } else if (url.pathname === "/shared/binding_easing.mjs") {
+        filePath = join(srcRoot, "binding_easing.mjs");
       } else if (url.pathname.startsWith("/vendor/zod/")) {
         filePath = safeResolve(zodRoot, url.pathname.slice("/vendor/zod/".length));
       } else {
@@ -356,6 +358,7 @@ if (isDirectNodeExecution) {
     write(join(root, "browser", "bootstrap.mjs"), "export const ok = true;\n");
     write(join(root, "src", "patch_protocol.mjs"), "export const ok = true;\n");
     write(join(root, "src", "scene_layout.mjs"), "export const ok = true;\n");
+    write(join(root, "src", "binding_easing.mjs"), "export const ok = true;\n");
     write(join(root, "node_modules", "zod", "index.js"), "export const z = {};\n");
     write(join(root, "image_cache", "test.jpg"), "jpg");
     return root;
@@ -368,12 +371,14 @@ if (isDirectNodeExecution) {
       const stage = await requestText(`http://${server.host}:${server.port}/`);
       const shared = await requestText(`http://${server.host}:${server.port}/shared/patch_protocol.mjs`);
       const layout = await requestText(`http://${server.host}:${server.port}/shared/scene_layout.mjs`);
+      const easing = await requestText(`http://${server.host}:${server.port}/shared/binding_easing.mjs`);
       const image = await requestText(`http://${server.host}:${server.port}/image_cache/test.jpg`);
       const forbidden = await requestText(`http://${server.host}:${server.port}/shared/not_allowed.mjs`);
       assert.equal(stage.status, 200);
       assert.match(stage.body, /stage/);
       assert.equal(shared.status, 200);
       assert.equal(layout.status, 200);
+      assert.equal(easing.status, 200);
       assert.equal(image.status, 200);
       assert.equal(forbidden.status, 404);
     } finally {
@@ -384,9 +389,12 @@ if (isDirectNodeExecution) {
   await t("browser-imported shared modules load without a global process", async () => {
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "src", "patch_protocol.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "src", "scene_layout.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "src", "binding_easing.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "bootstrap.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "ws_client.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "scene_reducer.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "feature_bus.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "feature_replayer.mjs"));
   });
 
   await t("replays current state after hello handshake", async () => {
