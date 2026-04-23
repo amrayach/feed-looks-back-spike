@@ -577,6 +577,23 @@ function detectStageMode(runDir) {
   return hasPrecomputedAudio && hasPrecomputedFeatures ? "precompute" : "live";
 }
 
+function registerSigintHandler({ processLike = process, onInterrupt }) {
+  if (!processLike || typeof processLike.on !== "function") return () => {};
+  const unregister =
+    typeof processLike.off === "function"
+      ? () => processLike.off("SIGINT", handler)
+      : typeof processLike.removeListener === "function"
+      ? () => processLike.removeListener("SIGINT", handler)
+      : () => {};
+
+  function handler(signal = "SIGINT") {
+    onInterrupt(signal);
+  }
+
+  processLike.on("SIGINT", handler);
+  return unregister;
+}
+
 async function run(options) {
   const {
     corpusDir,
@@ -599,6 +616,7 @@ async function run(options) {
     applyToolCallDetailedImpl = applyToolCallDetailed,
     createStageServerImpl = createStageServer,
     fetchImageImpl = undefined,
+    processLike = process,
   } = options;
 
   const cycles = listCycleFiles(corpusDir).filter((c) => {
@@ -627,252 +645,281 @@ async function run(options) {
   const stageServer = await createStageServerImpl();
   await stageServer.setCurrentRunContext({ runId, mode: stageMode, runDir });
   const operatorUrl = stageServer.getOperatorUrl({ runId, mode: stageMode });
-
-  process.stdout.write(
-    `run_id=${runId} config=${configName} model=${model} cycles=${cycles.length} mode=${mode}\n`,
-  );
-  process.stdout.write(`output: ${runDir}\n`);
-  process.stdout.write(`stage: ${operatorUrl}\n`);
-
-  const state = createInitialState();
-
-  const summary = {
-    run_id: runId,
-    config: configName,
-    model,
-    mode,
-    corpus_dir: corpusDir,
-    cycles_total: cycles.length,
-    cycles_range: cyclesRange,
-    started_at: new Date().toISOString(),
-    per_cycle: [],
-    totals: {
-      total_cycles: cycles.length,
-      tool_calls: 0,
-      cycles_with_tool_calls: 0,
-      cycles_silent: 0,
-      cost: 0,
-      ok_count: 0,
-      status_counts: {
-        [CYCLE_STATUS.OK]: 0,
-        [CYCLE_STATUS.API_FAILURE]: 0,
-        [CYCLE_STATUS.RESPONSE_PARSE_FAILURE]: 0,
-        [CYCLE_STATUS.PERSISTENCE_FAILURE]: 0,
-        [CYCLE_STATUS.TOOL_CALL_ERRORS]: 0,
-      },
+  const interruptState = { requested: false, signal: null, announced: false };
+  const cleanupSigintHandler = registerSigintHandler({
+    processLike,
+    onInterrupt: (signal) => {
+      if (interruptState.requested) return;
+      interruptState.requested = true;
+      interruptState.signal = signal;
+      process.stdout.write(
+        `\nINTERRUPT: ${signal} received. Finishing the current cycle, then finalizing partial artifacts.\n`,
+      );
     },
-  };
+  });
 
   try {
-    liveHtmlPath = await renderLiveHtmlImpl(runDir, { state, summary });
-    process.stdout.write(`live monitor: ${liveHtmlPath}\n`);
-    process.stdout.write(`open it in a browser now; it refreshes automatically during the run.\n\n`);
-  } catch (err) {
-    process.stdout.write(`WARN: live monitor initialization failed: ${err?.message ?? err}\n\n`);
-  }
+    process.stdout.write(
+      `run_id=${runId} config=${configName} model=${model} cycles=${cycles.length} mode=${mode}\n`,
+    );
+    process.stdout.write(`output: ${runDir}\n`);
+    process.stdout.write(`stage: ${operatorUrl}\n`);
 
-  for (const c of cycles) {
-    let cycle;
-    let cycleResult = {
-      toolCalls: [],
-      toolResults: [],
-      stop_reason: null,
-      usage: null,
-      error: null,
-      persistenceIssues: [],
-    };
-    let packet = null;
-    let status = CYCLE_STATUS.OK;
-    let errorInfo = null;
-    let persistenceError = null;
-    let activeCount = 0;
-    let cost = null;
+    const state = createInitialState();
 
-    try {
-      cycle = JSON.parse(readFileSync(c.path, "utf8"));
-      beginCycle(state, { cycleIndex: cycle.cycle_index, elapsedTotalS: cycle.elapsed_total_s });
-
-      packet = buildPacket({
-        cycle,
-        sceneStateSummary: formatSummary(state),
-        hijazBase,
-        mediumRules,
-        tools,
-        model,
-      });
-
-      await stageServer.broadcastPatch({
-        type: "cycle.begin",
-        cycle_n: cycle.cycle_index,
-        hijaz_state: cycle.hijaz_state ?? {},
-      });
-
-      cycleResult =
-        mode === "real"
-          ? await processCycleReal({
-              state,
-              cycle,
-              packet,
-              runDir,
-              client,
-              callOpusImpl,
-              applyToolCallDetailedImpl,
-              fetchImageImpl,
-              sleepImpl,
-            })
-          : await processCycleDry({
-              state,
-              cycle,
-              packet,
-              runDir,
-              applyToolCallDetailedImpl,
-              fetchImageImpl,
-            });
-
-      for (const patch of cycleResult.patches ?? []) {
-        await stageServer.broadcastPatch(patch);
-      }
-
-      const activeBeforeAutoFade = collectActiveElementIds(state);
-      autoFade(state);
-      const autoFadePatches = collectAutoFadePatches(state, activeBeforeAutoFade);
-      for (const patch of autoFadePatches) {
-        await stageServer.broadcastPatch(patch);
-      }
-      persistenceError = await persistStateWithRetry({
-        state,
-        runDir,
-        saveStateImpl,
-        snapshotCycleImpl,
-        sleepImpl,
-      });
-
-      status = deriveCycleStatus({
-        cycleError: cycleResult.error,
-        persistenceIssues: [
-          ...cycleResult.persistenceIssues,
-          ...(persistenceError ? [`state persistence failed: ${persistenceError.message}`] : []),
-        ],
-        toolResults: cycleResult.toolResults,
-      });
-
-      if (cycleResult.error) {
-        errorInfo = cycleResult.error;
-      } else if (status === CYCLE_STATUS.PERSISTENCE_FAILURE) {
-        const issues = [
-          ...cycleResult.persistenceIssues,
-          ...(persistenceError ? [`state persistence failed: ${persistenceError.message}`] : []),
-        ];
-        errorInfo = {
-          type: CYCLE_STATUS.PERSISTENCE_FAILURE,
-          message: issues.join("; "),
-        };
-      } else if (status === CYCLE_STATUS.TOOL_CALL_ERRORS) {
-        errorInfo = {
-          type: CYCLE_STATUS.TOOL_CALL_ERRORS,
-          message: "one or more tool calls returned structured errors",
-        };
-      }
-
-      activeCount = state.elements.filter((e) => !e.faded).length;
-      cost = mode === "real" ? computeCost(cycleResult.usage) : null;
-      await stageServer.broadcastPatch({ type: "cycle.end" });
-    } catch (err) {
-      status = CYCLE_STATUS.RESPONSE_PARSE_FAILURE;
-      errorInfo = {
-        type: CYCLE_STATUS.RESPONSE_PARSE_FAILURE,
-        message: err?.message ?? String(err),
-      };
-      activeCount = state.elements.filter((e) => !e.faded).length;
-      await stageServer.broadcastPatch({ type: "cycle.end" });
-    }
-
-    const statusLine = formatCycleStatus({
-      cycleIndex: cycle?.cycle_index ?? c.index,
-      elapsedS: cycle?.elapsed_total_s ?? "n/a",
-      toolCalls: cycleResult.toolCalls,
-      activeCount,
+    const summary = {
+      run_id: runId,
+      config: configName,
+      model,
       mode,
-      usage: cycleResult.usage,
-      cost,
-      status,
-    });
-    process.stdout.write(`${statusLine}\n`);
-
-    summary.totals.tool_calls += cycleResult.toolCalls.length;
-    if (cycleResult.toolCalls.length > 0) summary.totals.cycles_with_tool_calls += 1;
-    else if (status === CYCLE_STATUS.OK && cycleResult.stop_reason === "end_turn") {
-      summary.totals.cycles_silent += 1;
-    }
-    if (cost) summary.totals.cost += cost;
-    bumpStatusCount(summary, status);
-
-    summary.per_cycle.push({
-      cycle_index: cycle?.cycle_index ?? c.index,
-      cycle_id: cycle?.cycle_id ?? `cycle_${padIdx(c.index, 3)}`,
-      elapsed_s: cycle?.elapsed_total_s ?? null,
-      status,
-      error: errorInfo,
-      tool_calls: cycleResult.toolCalls.map((c) => ({ name: c.name, input: c.input })),
-      tool_results: cycleResult.toolResults,
-      persistence_issues: [
-        ...cycleResult.persistenceIssues,
-        ...(persistenceError ? [`state persistence failed: ${persistenceError.message}`] : []),
-      ],
-      stop_reason: cycleResult.stop_reason,
-      usage: cycleResult.usage,
-      cost,
-      active_after_cycle: activeCount,
-    });
+      corpus_dir: corpusDir,
+      cycles_total: cycles.length,
+      cycles_range: cyclesRange,
+      started_at: new Date().toISOString(),
+      per_cycle: [],
+      totals: {
+        total_cycles: cycles.length,
+        tool_calls: 0,
+        cycles_with_tool_calls: 0,
+        cycles_silent: 0,
+        cost: 0,
+        ok_count: 0,
+        status_counts: {
+          [CYCLE_STATUS.OK]: 0,
+          [CYCLE_STATUS.API_FAILURE]: 0,
+          [CYCLE_STATUS.RESPONSE_PARSE_FAILURE]: 0,
+          [CYCLE_STATUS.PERSISTENCE_FAILURE]: 0,
+          [CYCLE_STATUS.TOOL_CALL_ERRORS]: 0,
+        },
+      },
+    };
 
     try {
       liveHtmlPath = await renderLiveHtmlImpl(runDir, { state, summary });
+      process.stdout.write(`live monitor: ${liveHtmlPath}\n`);
+      process.stdout.write(`open it in a browser now; it refreshes automatically during the run.\n\n`);
     } catch (err) {
-      process.stdout.write(`WARN: live monitor update failed: ${err?.message ?? err}\n`);
+      process.stdout.write(`WARN: live monitor initialization failed: ${err?.message ?? err}\n\n`);
     }
-  }
 
-  summary.finished_at = new Date().toISOString();
-  const summaryPath = join(runDir, "run_summary.json");
-  const summaryWriteErr = await writeSummaryWithRetryImpl(summaryPath, summary, sleepImpl);
-  if (summaryWriteErr) {
+    for (const c of cycles) {
+      if (interruptState.requested) break;
+      let cycle;
+      let cycleResult = {
+        toolCalls: [],
+        toolResults: [],
+        stop_reason: null,
+        usage: null,
+        error: null,
+        persistenceIssues: [],
+      };
+      let packet = null;
+      let status = CYCLE_STATUS.OK;
+      let errorInfo = null;
+      let persistenceError = null;
+      let activeCount = 0;
+      let cost = null;
+
+      try {
+        cycle = JSON.parse(readFileSync(c.path, "utf8"));
+        beginCycle(state, { cycleIndex: cycle.cycle_index, elapsedTotalS: cycle.elapsed_total_s });
+
+        packet = buildPacket({
+          cycle,
+          sceneStateSummary: formatSummary(state),
+          hijazBase,
+          mediumRules,
+          tools,
+          model,
+        });
+
+        await stageServer.broadcastPatch({
+          type: "cycle.begin",
+          cycle_n: cycle.cycle_index,
+          hijaz_state: cycle.hijaz_state ?? {},
+        });
+
+        cycleResult =
+          mode === "real"
+            ? await processCycleReal({
+                state,
+                cycle,
+                packet,
+                runDir,
+                client,
+                callOpusImpl,
+                applyToolCallDetailedImpl,
+                fetchImageImpl,
+                sleepImpl,
+              })
+            : await processCycleDry({
+                state,
+                cycle,
+                packet,
+                runDir,
+                applyToolCallDetailedImpl,
+                fetchImageImpl,
+              });
+
+        for (const patch of cycleResult.patches ?? []) {
+          await stageServer.broadcastPatch(patch);
+        }
+
+        const activeBeforeAutoFade = collectActiveElementIds(state);
+        autoFade(state);
+        const autoFadePatches = collectAutoFadePatches(state, activeBeforeAutoFade);
+        for (const patch of autoFadePatches) {
+          await stageServer.broadcastPatch(patch);
+        }
+        persistenceError = await persistStateWithRetry({
+          state,
+          runDir,
+          saveStateImpl,
+          snapshotCycleImpl,
+          sleepImpl,
+        });
+
+        status = deriveCycleStatus({
+          cycleError: cycleResult.error,
+          persistenceIssues: [
+            ...cycleResult.persistenceIssues,
+            ...(persistenceError ? [`state persistence failed: ${persistenceError.message}`] : []),
+          ],
+          toolResults: cycleResult.toolResults,
+        });
+
+        if (cycleResult.error) {
+          errorInfo = cycleResult.error;
+        } else if (status === CYCLE_STATUS.PERSISTENCE_FAILURE) {
+          const issues = [
+            ...cycleResult.persistenceIssues,
+            ...(persistenceError ? [`state persistence failed: ${persistenceError.message}`] : []),
+          ];
+          errorInfo = {
+            type: CYCLE_STATUS.PERSISTENCE_FAILURE,
+            message: issues.join("; "),
+          };
+        } else if (status === CYCLE_STATUS.TOOL_CALL_ERRORS) {
+          errorInfo = {
+            type: CYCLE_STATUS.TOOL_CALL_ERRORS,
+            message: "one or more tool calls returned structured errors",
+          };
+        }
+
+        activeCount = state.elements.filter((e) => !e.faded).length;
+        cost = mode === "real" ? computeCost(cycleResult.usage) : null;
+        await stageServer.broadcastPatch({ type: "cycle.end" });
+      } catch (err) {
+        status = CYCLE_STATUS.RESPONSE_PARSE_FAILURE;
+        errorInfo = {
+          type: CYCLE_STATUS.RESPONSE_PARSE_FAILURE,
+          message: err?.message ?? String(err),
+        };
+        activeCount = state.elements.filter((e) => !e.faded).length;
+        await stageServer.broadcastPatch({ type: "cycle.end" });
+      }
+
+      const statusLine = formatCycleStatus({
+        cycleIndex: cycle?.cycle_index ?? c.index,
+        elapsedS: cycle?.elapsed_total_s ?? "n/a",
+        toolCalls: cycleResult.toolCalls,
+        activeCount,
+        mode,
+        usage: cycleResult.usage,
+        cost,
+        status,
+      });
+      process.stdout.write(`${statusLine}\n`);
+
+      summary.totals.tool_calls += cycleResult.toolCalls.length;
+      if (cycleResult.toolCalls.length > 0) summary.totals.cycles_with_tool_calls += 1;
+      else if (status === CYCLE_STATUS.OK && cycleResult.stop_reason === "end_turn") {
+        summary.totals.cycles_silent += 1;
+      }
+      if (cost) summary.totals.cost += cost;
+      bumpStatusCount(summary, status);
+
+      summary.per_cycle.push({
+        cycle_index: cycle?.cycle_index ?? c.index,
+        cycle_id: cycle?.cycle_id ?? `cycle_${padIdx(c.index, 3)}`,
+        elapsed_s: cycle?.elapsed_total_s ?? null,
+        status,
+        error: errorInfo,
+        tool_calls: cycleResult.toolCalls.map((c) => ({ name: c.name, input: c.input })),
+        tool_results: cycleResult.toolResults,
+        persistence_issues: [
+          ...cycleResult.persistenceIssues,
+          ...(persistenceError ? [`state persistence failed: ${persistenceError.message}`] : []),
+        ],
+        stop_reason: cycleResult.stop_reason,
+        usage: cycleResult.usage,
+        cost,
+        active_after_cycle: activeCount,
+      });
+
+      try {
+        liveHtmlPath = await renderLiveHtmlImpl(runDir, { state, summary });
+      } catch (err) {
+        process.stdout.write(`WARN: live monitor update failed: ${err?.message ?? err}\n`);
+      }
+      if (interruptState.requested && !interruptState.announced) {
+        interruptState.announced = true;
+        process.stdout.write(
+          `INTERRUPT: stopping after cycle ${padIdx(cycle?.cycle_index ?? c.index, 3)}.\n`,
+        );
+      }
+    }
+
+    summary.interrupted = interruptState.requested;
+    summary.interrupt_signal = interruptState.signal;
+    summary.cycles_completed = summary.per_cycle.length;
+    summary.finished_at = new Date().toISOString();
+    const summaryPath = join(runDir, "run_summary.json");
+    const summaryWriteErr = await writeSummaryWithRetryImpl(summaryPath, summary, sleepImpl);
+    if (summaryWriteErr) {
+      process.stdout.write(
+        `WARN: run_summary.json write failed after retry: ${summaryWriteErr.message}\n`,
+      );
+    }
+
+    // render final_scene.html from whatever state exists. runs for both dry-run
+    // and real modes so the artifact is always available for review. defensive:
+    // if rendering fails, the run is already persisted — log and continue.
+    let finalHtmlPath = null;
+    try {
+      finalHtmlPath = await renderFinalHtmlImpl(runDir, { state, summary });
+    } catch (err) {
+      process.stdout.write(`WARN: final_scene.html render failed: ${err?.message ?? err}\n`);
+    }
+
     process.stdout.write(
-      `WARN: run_summary.json write failed after retry: ${summaryWriteErr.message}\n`,
+      (interruptState.requested
+        ? `\nInterrupted after ${summary.per_cycle.length}/${cycles.length} cycles.\n`
+        : `\nDone. ${cycles.length} cycles processed.\n`) +
+        `Tool calls total: ${summary.totals.tool_calls} (${summary.totals.cycles_with_tool_calls} cycles with calls, ${summary.totals.cycles_silent} silent)\n` +
+        (mode === "real" ? `Cost total: $${summary.totals.cost.toFixed(4)}\n` : "") +
+        `Run dir: ${runDir}\n` +
+        `Stage: ${operatorUrl}\n` +
+        (liveHtmlPath ? `Live monitor: ${liveHtmlPath}\n` : "") +
+        (summaryWriteErr ? `Run summary write failed: ${summaryWriteErr.message}\n` : "") +
+        (finalHtmlPath ? `Final HTML: ${finalHtmlPath}\n` : ""),
     );
+
+    await stageServer.close();
+
+    return {
+      runId,
+      runDir,
+      summary,
+      liveHtmlPath,
+      finalHtmlPath,
+      summaryWriteError: summaryWriteErr,
+      operatorUrl,
+      interrupted: interruptState.requested,
+    };
+  } finally {
+    cleanupSigintHandler();
   }
-
-  // render final_scene.html from whatever state exists. runs for both dry-run
-  // and real modes so the artifact is always available for review. defensive:
-  // if rendering fails, the run is already persisted — log and continue.
-  let finalHtmlPath = null;
-  try {
-    finalHtmlPath = await renderFinalHtmlImpl(runDir, { state, summary });
-  } catch (err) {
-    process.stdout.write(`WARN: final_scene.html render failed: ${err?.message ?? err}\n`);
-  }
-
-  process.stdout.write(
-    `\nDone. ${cycles.length} cycles processed.\n` +
-      `Tool calls total: ${summary.totals.tool_calls} (${summary.totals.cycles_with_tool_calls} cycles with calls, ${summary.totals.cycles_silent} silent)\n` +
-      (mode === "real" ? `Cost total: $${summary.totals.cost.toFixed(4)}\n` : "") +
-      `Run dir: ${runDir}\n` +
-      `Stage: ${operatorUrl}\n` +
-      (liveHtmlPath ? `Live monitor: ${liveHtmlPath}\n` : "") +
-      (summaryWriteErr ? `Run summary write failed: ${summaryWriteErr.message}\n` : "") +
-      (finalHtmlPath ? `Final HTML: ${finalHtmlPath}\n` : ""),
-  );
-
-  await stageServer.close();
-
-  return {
-    runId,
-    runDir,
-    summary,
-    liveHtmlPath,
-    finalHtmlPath,
-    summaryWriteError: summaryWriteErr,
-    operatorUrl,
-  };
 }
 
 function makeTestCycle(index) {
@@ -1161,6 +1208,68 @@ async function runSelfTests() {
     assert.equal(captured[4].type, "element.add");
     assert.equal(captured[5].type, "cycle.end");
     assert.match(operatorUrl, /\?run_id=.*&mode=live$/);
+    assert.equal(existsSync(join(runDir, "final_scene.html")), true);
+  });
+
+  await t("run finalizes partial artifacts after SIGINT and stops before the next cycle", async () => {
+    const tempRoot = freshTempRoot("run-spike-sigint");
+    const corpusDir = join(tempRoot, "corpus");
+    const outputRoot = join(tempRoot, "output");
+    writeTestCorpus(corpusDir, 3);
+
+    const listeners = new Map();
+    const fakeProcess = {
+      on(event, handler) {
+        const current = listeners.get(event) ?? [];
+        current.push(handler);
+        listeners.set(event, current);
+      },
+      off(event, handler) {
+        listeners.set(
+          event,
+          (listeners.get(event) ?? []).filter((entry) => entry !== handler),
+        );
+      },
+      emit(event, payload) {
+        for (const handler of listeners.get(event) ?? []) handler(payload);
+      },
+    };
+
+    let callCount = 0;
+    const mockCallOpus = async () => {
+      callCount += 1;
+      if (callCount === 1) fakeProcess.emit("SIGINT", "SIGINT");
+      return {
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "no tools" }],
+        usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 50 },
+      };
+    };
+
+    const { runDir, summary, interrupted } = await run({
+      corpusDir,
+      configName: "config_a",
+      cyclesRange: null,
+      mode: "real",
+      callOpusImpl: mockCallOpus,
+      makeClientImpl: () => ({ mocked: true }),
+      outputRoot,
+      hijazBaseOverride: "self-test hijaz base",
+      mediumRulesOverride: "self-test medium rules",
+      toolsOverride: [],
+      modelOverride: "claude-opus-4-7",
+      sleepImpl: async () => {},
+      createStageServerImpl: async () => makeStageServerStub(),
+      processLike: fakeProcess,
+    });
+
+    assert.equal(interrupted, true);
+    assert.equal(callCount, 1);
+    assert.equal(summary.interrupted, true);
+    assert.equal(summary.interrupt_signal, "SIGINT");
+    assert.equal(summary.cycles_completed, 1);
+    assert.equal(summary.per_cycle.length, 1);
+    assert.equal(existsSync(join(runDir, "run_summary.json")), true);
     assert.equal(existsSync(join(runDir, "final_scene.html")), true);
   });
 
