@@ -1,0 +1,42 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+corpus/
+audio/
+
+.DS_Store
+.vscode/
+.idea/
+
+# Node
+node_modules/
+**/node_modules/
+
+# Generated run artifacts and fetched media
+node/output/
+node/image_cache/
+dist/
+build/
+
+# Environment + secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+*.swp
+*~
+
+# Playwright (added in Session I for self-frame capture)
+playwright-report/
+.playwright-screenshots/
+test-results/
