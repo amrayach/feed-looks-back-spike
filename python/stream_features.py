@@ -235,10 +235,161 @@ def run_live(
     device: str | None,
     frame_rate_hz: int = FRAME_RATE_HZ,
 ) -> int:
-    raise NotImplementedError(
-        f"live mode is wired in Phase 3 Task 7 "
-        f"(ws_url={ws_url}, run_id={run_id}, device={device}, frame_rate_hz={frame_rate_hz})"
+    """
+    Open a sounddevice input on the selected device, run per-chunk DSP,
+    stream feature frames to stage_server as role=feature_producer.
+
+    Hijaz state in live mode is a simplified 'quiet | approach' placeholder
+    until the online rolling-window detector lands (spec §15 open risks).
+    Amplitude and intensity faithfully reflect the input; centroid and
+    onset are reported as computed. Phase 7 upgrades the online state.
+
+    Blocks until SIGINT/SIGTERM. Returns 0 on clean shutdown.
+    """
+    # Deferred imports — precompute-only systems shouldn't need these
+    # available at module load time.
+    import asyncio
+    import queue as queue_mod
+    import signal
+    import sys as sys_mod
+
+    import sounddevice as sd
+    import websockets
+
+    sr_request = 48000
+    # blocksize ~= sample_rate / frame_rate_hz aligns the audio callback
+    # cadence with the target feature rate. Clamped to a power-of-two to
+    # keep sounddevice happy with ALSA/Pulse/JACK backends.
+    target_block = max(256, 1 << int(np.floor(np.log2(sr_request / frame_rate_hz))))
+
+    audio_queue: queue_mod.Queue[np.ndarray] = queue_mod.Queue(maxsize=64)
+    stop_event = asyncio.Event()
+
+    def callback(indata, _frames, _time_info, status):
+        if status:
+            # Drop frames silently on underrun; next chunk will catch up.
+            return
+        try:
+            audio_queue.put_nowait(indata.copy())
+        except queue_mod.Full:
+            pass
+
+    async def sender():
+        async with websockets.connect(ws_url, open_timeout=5) as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "hello",
+                        "role": "feature_producer",
+                        "run_id": run_id,
+                        "mode": "live",
+                    }
+                )
+            )
+            loop = asyncio.get_event_loop()
+            while not stop_event.is_set():
+                try:
+                    chunk = await loop.run_in_executor(
+                        None, lambda: audio_queue.get(timeout=0.5)
+                    )
+                except queue_mod.Empty:
+                    continue
+                mono = chunk.mean(axis=1) if chunk.ndim > 1 else chunk
+                features = _live_extract(mono.astype(np.float32), sr_request)
+                for name, value in features.items():
+                    await ws.send(
+                        json.dumps(
+                            {"channel": "feature", "feature": name, "value": value}
+                        )
+                    )
+
+    def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
+        def _stop(*_):
+            loop.call_soon_threadsafe(stop_event.set)
+
+        # POSIX-only; Windows would need ctypes handler shim.
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _stop)
+            except (NotImplementedError, RuntimeError):
+                signal.signal(sig, lambda *_: stop_event.set())
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        _install_signal_handlers(loop)
+        send_task = asyncio.create_task(sender())
+        await stop_event.wait()
+        send_task.cancel()
+        try:
+            await send_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            # sender exits cleanly on cancel; websocket close handled by context mgr
+            pass
+
+    try:
+        with sd.InputStream(
+            samplerate=sr_request,
+            channels=1,
+            dtype="float32",
+            blocksize=target_block,
+            device=device,
+            callback=callback,
+        ):
+            asyncio.run(main())
+    except Exception as err:  # noqa: BLE001
+        print(f"stream_features live error: {err}", file=sys_mod.stderr)
+        return 1
+    return 0
+
+
+def _live_extract(y: np.ndarray, sr: int) -> dict[str, Any]:
+    """
+    Minimal per-chunk DSP for live mode. Amplitude from RMS, onset from
+    librosa onset envelope, centroid via librosa spectral centroid.
+
+    Hijaz state in live mode is a placeholder: 'quiet' when amplitude is
+    below 0.1, else 'approach'. tahwil/aug2 detection requires a rolling
+    cycle-history buffer (Phase 7). Intensity == amplitude in this mode.
+    """
+    import librosa
+
+    if y.size == 0:
+        return {
+            "amplitude": 0.0,
+            "onset_strength": 0.0,
+            "spectral_centroid": 0.0,
+            "hijaz_state": "quiet",
+            "hijaz_intensity": 0.0,
+            "hijaz_tahwil": False,
+        }
+
+    rms_frame = float(np.sqrt(np.mean(y * y) + 1e-12))
+    amplitude = float(min(1.0, rms_frame / 0.3))
+
+    # librosa defaults n_fft=2048; short live blocks must scale it down to
+    # the next power of two ≤ buffer length, else librosa warns and
+    # zero-pads (which skews centroid/onset values upward).
+    n_fft = max(256, 1 << int(np.floor(np.log2(max(256, y.size)))))
+    n_fft = min(n_fft, 2048)
+
+    centroid = float(
+        librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=n_fft).mean()
     )
+    onset_raw = float(
+        librosa.onset.onset_strength(y=y, sr=sr, n_fft=n_fft).mean()
+    )
+    onset_norm = float(min(1.0, onset_raw / 6.0))
+
+    hijaz_state = "quiet" if amplitude < 0.1 else "approach"
+
+    return {
+        "amplitude": amplitude,
+        "onset_strength": onset_norm,
+        "spectral_centroid": centroid,
+        "hijaz_state": hijaz_state,
+        "hijaz_intensity": amplitude,
+        "hijaz_tahwil": False,
+    }
 
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
@@ -375,6 +526,34 @@ def _run_self_tests() -> int:
 
     t("precompute_track returns a valid schema v1 track for a synth WAV", _check_synth_track)
     t("precompute_track first frame t=0, last frame within 1/60 s of duration", _check_boundaries)
+
+    def _live_extract_frame_shape():
+        # Exercise _live_extract directly against a synthetic buffer — no
+        # sounddevice / websockets / asyncio needed for the structural check.
+        y, sr = _synth_audio(duration_s=0.2)
+        frame = _live_extract(y.astype(np.float32), sr)
+        required = {
+            "amplitude", "onset_strength", "spectral_centroid",
+            "hijaz_state", "hijaz_intensity", "hijaz_tahwil",
+        }
+        assert set(frame.keys()) == required, f"bad keys: {frame.keys()}"
+        assert 0.0 <= frame["amplitude"] <= 1.0
+        assert 0.0 <= frame["onset_strength"] <= 1.0
+        assert frame["spectral_centroid"] >= 0.0
+        assert frame["hijaz_state"] in VALID_HIJAZ_STATES
+        assert 0.0 <= frame["hijaz_intensity"] <= 1.0
+        assert isinstance(frame["hijaz_tahwil"], bool)
+
+    t("_live_extract returns a valid frame shape for a synthetic buffer", _live_extract_frame_shape)
+
+    def _live_extract_silence():
+        silence = np.zeros(960, dtype=np.float32)
+        frame = _live_extract(silence, 48000)
+        assert frame["hijaz_state"] == "quiet"
+        assert frame["amplitude"] < 0.01
+        assert frame["hijaz_tahwil"] is False
+
+    t("_live_extract reports quiet + zero intensity on silence", _live_extract_silence)
 
     print(f"\n{passed}/{passed + failed} passed")
     return 0 if failed == 0 else 1
