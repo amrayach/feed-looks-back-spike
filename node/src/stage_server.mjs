@@ -551,6 +551,53 @@ if (isDirectNodeExecution) {
     }
   });
 
+  await t("/run/<run_id>/features_track.json is served with validated schema payload", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-features-track");
+    const runDir = join(nodeRoot, "output", "run_ftrack");
+    mkdirSync(runDir, { recursive: true });
+    const track = {
+      schema_version: "1",
+      duration_s: 2.0,
+      frame_rate_hz: 60,
+      frames: [
+        {
+          t: 0,
+          amplitude: 0.1,
+          onset_strength: 0,
+          spectral_centroid: 1200,
+          hijaz_state: "quiet",
+          hijaz_intensity: 0.1,
+          hijaz_tahwil: false,
+        },
+        {
+          t: 1.0,
+          amplitude: 0.5,
+          onset_strength: 0.8,
+          spectral_centroid: 2000,
+          hijaz_state: "approach",
+          hijaz_intensity: 0.6,
+          hijaz_tahwil: true,
+        },
+      ],
+    };
+    write(join(runDir, "features_track.json"), JSON.stringify(track));
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "ftrack", mode: "precompute", runDir });
+      const res = await requestText(
+        `http://${server.host}:${server.port}/run/ftrack/features_track.json`,
+      );
+      assert.equal(res.status, 200);
+      const { FeaturesTrackSchema } = await import("./patch_protocol.mjs");
+      const parsed = FeaturesTrackSchema.parse(JSON.parse(res.body));
+      assert.equal(parsed.frames.length, 2);
+      assert.equal(parsed.frames[1].hijaz_state, "approach");
+      assert.equal(parsed.frames[1].hijaz_tahwil, true);
+    } finally {
+      await server.close();
+    }
+  });
+
   await t("broadcastFeature public API validates and relays to operators", async () => {
     const nodeRoot = freshNodeRoot("flb-stage-server-broadcast-feature");
     const runDir = join(nodeRoot, "output", "run_bcast");
