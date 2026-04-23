@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
 import { createPatchCache } from "./patch_cache.mjs";
+import { WsMessageSchema } from "./patch_protocol.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_NODE_ROOT = resolve(__dirname, "..");
@@ -133,8 +134,17 @@ export async function createStageServer({
     }
   }
 
+  async function broadcastFeatureFromProducer(feature, value) {
+    if (!currentContext) throw new Error("stage server run context not set");
+    const msg = WsMessageSchema.parse({ channel: "feature", feature, value });
+    for (const [ws, meta] of clientMeta.entries()) {
+      if (!meta.accepted || meta.role !== "operator" || meta.runId !== currentContext.runId) continue;
+      sendJson(ws, msg);
+    }
+  }
+
   wss.on("connection", (ws) => {
-    clientMeta.set(ws, { accepted: false, runId: null, mode: null });
+    clientMeta.set(ws, { accepted: false, runId: null, mode: null, role: null });
 
     ws.on("message", async (raw) => {
       let parsed;
@@ -163,11 +173,33 @@ export async function createStageServer({
           ws.close();
           return;
         }
+        const role = parsed.role === "feature_producer" ? "feature_producer" : "operator";
         meta.accepted = true;
         meta.runId = parsed.run_id;
         meta.mode = parsed.mode;
-        await sendReplay(ws);
+        meta.role = role;
+        if (role === "operator") {
+          await sendReplay(ws);
+        }
+        return;
       }
+
+      // Post-handshake routing by role.
+      if (meta.role === "feature_producer") {
+        if (parsed?.channel !== "feature") {
+          sendJson(ws, { type: "error", message: "feature_producer may only send feature messages" });
+          return;
+        }
+        try {
+          await broadcastFeatureFromProducer(parsed.feature, parsed.value);
+        } catch (err) {
+          sendJson(ws, { type: "error", message: `feature rejected: ${err?.message ?? err}` });
+        }
+        return;
+      }
+
+      // Operator role: inbound messages are forbidden (operators are read-only).
+      sendJson(ws, { type: "error", message: "operator role is read-only; clients may not post" });
     });
 
     ws.on("close", () => {
@@ -217,9 +249,13 @@ export async function createStageServer({
       }
       await patchCache.apply(patch);
       for (const [ws, meta] of clientMeta.entries()) {
-        if (!meta.accepted || meta.runId !== currentContext.runId) continue;
+        if (!meta.accepted || meta.role !== "operator" || meta.runId !== currentContext.runId) continue;
         sendJson(ws, { channel: "patch", patch });
       }
+    },
+
+    async broadcastFeature(feature, value) {
+      await broadcastFeatureFromProducer(feature, value);
     },
 
     async close() {
@@ -415,6 +451,141 @@ if (isDirectNodeExecution) {
       assert.equal(messages[0].patch.type, "replay.begin");
       assert.equal(messages[1].patch.type, "replay.end");
       assert.equal(messages[2].patch.type, "cycle.end");
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("feature_producer role sends feature messages that reach operator clients", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-feature");
+    const runDir = join(nodeRoot, "output", "run_feat");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "feat", mode: "live", runDir });
+
+      const operatorMessages = [];
+      const operatorWs = await new Promise((resolvePromise, rejectPromise) => {
+        const ws = new WebSocket(`ws://${server.host}:${server.port}/ws`);
+        ws.once("open", () => {
+          ws.send(JSON.stringify({ type: "hello", run_id: "feat", mode: "live" }));
+        });
+        ws.on("message", (raw) => {
+          const msg = JSON.parse(String(raw));
+          operatorMessages.push(msg);
+          if (msg?.patch?.type === "replay.end") resolvePromise(ws);
+        });
+        ws.once("error", rejectPromise);
+      });
+
+      await new Promise((resolvePromise, rejectPromise) => {
+        const producer = new WebSocket(`ws://${server.host}:${server.port}/ws`);
+        producer.once("open", () => {
+          producer.send(JSON.stringify({ type: "hello", role: "feature_producer", run_id: "feat", mode: "live" }));
+          producer.send(JSON.stringify({ channel: "feature", feature: "amplitude", value: 0.42 }));
+        });
+        setTimeout(() => {
+          try {
+            producer.close();
+          } catch {
+            // ignore
+          }
+          resolvePromise();
+        }, 150);
+        producer.once("error", rejectPromise);
+      });
+
+      await new Promise((r) => setTimeout(r, 100));
+      operatorWs.close();
+
+      const featureMessages = operatorMessages.filter((m) => m.channel === "feature");
+      assert.equal(featureMessages.length, 1);
+      assert.equal(featureMessages[0].feature, "amplitude");
+      assert.equal(featureMessages[0].value, 0.42);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("operator clients cannot post feature messages (rejected with error)", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-feature-reject");
+    const runDir = join(nodeRoot, "output", "run_reject");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "reject", mode: "live", runDir });
+      const errors = [];
+      await new Promise((resolvePromise, rejectPromise) => {
+        const ws = new WebSocket(`ws://${server.host}:${server.port}/ws`);
+        let sent = false;
+        ws.once("open", () => {
+          ws.send(JSON.stringify({ type: "hello", run_id: "reject", mode: "live" }));
+        });
+        ws.on("message", (raw) => {
+          const msg = JSON.parse(String(raw));
+          if (!sent && msg?.patch?.type === "replay.end") {
+            sent = true;
+            ws.send(JSON.stringify({ channel: "feature", feature: "amplitude", value: 0.1 }));
+          }
+          if (msg?.type === "error") {
+            errors.push(msg.message);
+            ws.close();
+          }
+        });
+        ws.on("close", () => resolvePromise());
+        setTimeout(() => {
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+        }, 500);
+        ws.once("error", rejectPromise);
+      });
+      assert.ok(
+        errors.some((m) => /operator|read-only|forbidden/i.test(m)),
+        `expected operator-rejection error, got ${JSON.stringify(errors)}`,
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("broadcastFeature public API validates and relays to operators", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-broadcast-feature");
+    const runDir = join(nodeRoot, "output", "run_bcast");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "bcast", mode: "precompute", runDir });
+      const operatorMessages = [];
+      const operatorWs = await new Promise((resolvePromise, rejectPromise) => {
+        const ws = new WebSocket(`ws://${server.host}:${server.port}/ws`);
+        ws.once("open", () => {
+          ws.send(JSON.stringify({ type: "hello", run_id: "bcast", mode: "precompute" }));
+        });
+        ws.on("message", (raw) => {
+          const msg = JSON.parse(String(raw));
+          operatorMessages.push(msg);
+          if (msg?.patch?.type === "replay.end") resolvePromise(ws);
+        });
+        ws.once("error", rejectPromise);
+      });
+
+      await server.broadcastFeature("amplitude", 0.25);
+      await server.broadcastFeature("hijaz_state", "arrived");
+      await new Promise((r) => setTimeout(r, 80));
+      operatorWs.close();
+
+      await assert.rejects(
+        () => server.broadcastFeature("amplitude", 1.5),
+        /invalid value|amplitude/i,
+      );
+
+      const featureMessages = operatorMessages.filter((m) => m.channel === "feature");
+      assert.equal(featureMessages.length, 2);
+      assert.equal(featureMessages[0].value, 0.25);
+      assert.equal(featureMessages[1].value, "arrived");
     } finally {
       await server.close();
     }
