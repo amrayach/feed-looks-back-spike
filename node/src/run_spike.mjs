@@ -721,6 +721,7 @@ async function run(options) {
   const runId = timestampSlug();
   const runDir = join(outputRoot, `run_${runId}`);
   ensureDir(runDir);
+  const cycleOrdinalByIndex = new Map(cycles.map((entry, idx) => [entry.index, idx]));
   const stageAudio = prepareStageAudioImpl({ sourcePath: stageAudioPath, runDir });
   const stageMode = detectStageMode(runDir);
 
@@ -864,6 +865,8 @@ async function run(options) {
           model,
           moodBoardBlocks,
           selfFrameUserBlocks: pendingSelfFrameBlocks,
+          cycleOrdinal: cycleOrdinalByIndex.get(c.index),
+          cyclesTotal: cycles.length,
         });
         pendingSelfFrameBlocks = [];                              // consumed — reset after use
 

@@ -17,6 +17,54 @@ const FEATURE_NAMES = [
 const VALID_STATES = new Set(["quiet", "approach", "arrived", "tahwil", "aug2"]);
 const NON_COMMAND_PATCH_TYPES = new Set(["cycle.begin", "cycle.end", "replay.begin", "replay.end"]);
 
+const VISUAL_GRAMMAR = Object.freeze({
+  quiet: Object.freeze({
+    name: "manuscript hush",
+    archAlpha: 0.16,
+    columnAlpha: 0.12,
+    manuscriptRows: 8,
+    ruptureAlpha: 0.08,
+    glowAlpha: 0.2,
+    opening: 0.18,
+  }),
+  approach: Object.freeze({
+    name: "threshold approach",
+    archAlpha: 0.28,
+    columnAlpha: 0.22,
+    manuscriptRows: 11,
+    ruptureAlpha: 0.18,
+    glowAlpha: 0.32,
+    opening: 0.34,
+  }),
+  arrived: Object.freeze({
+    name: "settled room",
+    archAlpha: 0.34,
+    columnAlpha: 0.25,
+    manuscriptRows: 12,
+    ruptureAlpha: 0.14,
+    glowAlpha: 0.38,
+    opening: 0.42,
+  }),
+  tahwil: Object.freeze({
+    name: "upper threshold",
+    archAlpha: 0.42,
+    columnAlpha: 0.32,
+    manuscriptRows: 15,
+    ruptureAlpha: 0.34,
+    glowAlpha: 0.48,
+    opening: 0.62,
+  }),
+  aug2: Object.freeze({
+    name: "widened gap",
+    archAlpha: 0.36,
+    columnAlpha: 0.28,
+    manuscriptRows: 13,
+    ruptureAlpha: 0.72,
+    glowAlpha: 0.4,
+    opening: 0.52,
+  }),
+});
+
 const PALETTES = Object.freeze({
   quiet: Object.freeze({
     base: [16, 20, 30],
@@ -80,6 +128,10 @@ function normalizedFromHash(seed, offset) {
 
 export function isCommandPatch(patch) {
   return Boolean(patch?.type && !NON_COMMAND_PATCH_TYPES.has(patch.type));
+}
+
+export function getVisualGrammarForState(state) {
+  return VISUAL_GRAMMAR[VALID_STATES.has(state) ? state : "quiet"];
 }
 
 export function createCommandPulse(patch, startedAtS = 0, { reducedMotion = false } = {}) {
@@ -152,6 +204,7 @@ export function computeVisualFrame(rawFeatures = {}, previous = {}, options = {}
   return {
     state,
     palette,
+    grammar: getVisualGrammarForState(state),
     amplitude,
     onset,
     intensity,
@@ -172,6 +225,130 @@ function resizeCanvas(canvas, ctx, windowLike) {
   }
   if (ctx.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { width: width / dpr, height: height / dpr, dpr };
+}
+
+function archPath(ctx, cx, springY, span, rise, footY) {
+  const left = cx - span / 2;
+  const right = cx + span / 2;
+  ctx.beginPath();
+  ctx.moveTo(left, footY);
+  ctx.lineTo(left, springY);
+  if (ctx.bezierCurveTo) {
+    ctx.bezierCurveTo(left + span * 0.04, springY - rise, right - span * 0.04, springY - rise, right, springY);
+  } else {
+    const steps = 20;
+    for (let i = 1; i <= steps; i += 1) {
+      const t = i / steps;
+      const x = left + span * t;
+      const archY = springY - Math.sin(t * Math.PI) * rise;
+      ctx.lineTo(x, archY);
+    }
+  }
+  ctx.lineTo(right, footY);
+}
+
+function drawLampGlow(ctx, width, height, frame, timeS) {
+  const { palette, grammar, amplitude, energy } = frame;
+  const cx = width * (0.5 + Math.sin(timeS * 0.08) * 0.025);
+  const cy = height * 0.76;
+  const radius = Math.min(width, height) * (0.28 + energy * 0.14);
+  ctx.globalCompositeOperation = "screen";
+  if (ctx.createRadialGradient) {
+    const glow = ctx.createRadialGradient(cx, cy, radius * 0.08, cx, cy, radius);
+    glow.addColorStop(0, rgba(palette.accent, 0.08 + grammar.glowAlpha * 0.22 + amplitude * 0.12));
+    glow.addColorStop(0.38, rgba(palette.warm, 0.05 + grammar.glowAlpha * 0.12));
+    glow.addColorStop(1, rgba(palette.base, 0));
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawThresholdArchitecture(ctx, width, height, frame, timeS) {
+  const { palette, grammar, energy, intensity, onset, centroid, state } = frame;
+  const centerX = width * (0.5 + (state === "tahwil" ? Math.sin(timeS * 0.16) * 0.018 : 0));
+  const baseY = height * (0.75 - centroid * 0.08 - grammar.opening * 0.04);
+  const footY = height * 0.9;
+  const archCount = 3;
+
+  for (let i = 0; i < archCount; i += 1) {
+    const k = i / Math.max(1, archCount - 1);
+    const span = width * (0.34 + k * 0.28 + grammar.opening * 0.12 + energy * 0.04);
+    const rise = height * (0.22 + k * 0.08 + intensity * 0.08 + onset * 0.03);
+    const springY = baseY - k * height * 0.035 - onset * 16;
+    const alpha = Math.min(0.58, grammar.archAlpha * (0.45 + k * 0.5) + energy * 0.12);
+    const grad = ctx.createLinearGradient?.(centerX - span / 2, springY, centerX + span / 2, springY);
+    if (grad?.addColorStop) {
+      grad.addColorStop(0, rgba(palette.cool, alpha * 0.28));
+      grad.addColorStop(0.5, rgba(palette.accent, alpha));
+      grad.addColorStop(1, rgba(palette.warm, alpha * 0.35));
+      ctx.strokeStyle = grad;
+    } else {
+      ctx.strokeStyle = rgba(palette.accent, alpha);
+    }
+    ctx.lineWidth = 1.2 + k * 1.6 + energy * 3.2;
+    archPath(ctx, centerX, springY, span, rise, footY - k * height * 0.035);
+    ctx.stroke();
+  }
+
+  const columnXs = [0.14, 0.24, 0.36, 0.64, 0.76, 0.86];
+  for (let i = 0; i < columnXs.length; i += 1) {
+    const x = width * columnXs[i];
+    const side = columnXs[i] < 0.5 ? -1 : 1;
+    const lean = side * (state === "approach" ? -1 : 1) * (4 + energy * 18) + Math.sin(timeS * 0.28 + i) * 3;
+    const top = height * (0.2 + (i % 3) * 0.035 - centroid * 0.04);
+    const bottom = height * (0.88 - (i % 2) * 0.025);
+    const alpha = Math.min(0.34, grammar.columnAlpha + energy * 0.1 + onset * 0.08);
+    ctx.strokeStyle = rgba(i % 2 ? palette.cool : palette.warm, alpha);
+    ctx.lineWidth = 1 + energy * 2.4;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x + lean, bottom);
+    ctx.stroke();
+  }
+}
+
+function drawManuscriptLines(ctx, width, height, frame, timeS) {
+  const { palette, grammar, energy, amplitude, centroid } = frame;
+  const rows = grammar.manuscriptRows + Math.round(energy * 7);
+  const startY = height * (0.64 + centroid * 0.06);
+  ctx.globalCompositeOperation = "screen";
+  for (let i = 0; i < rows; i += 1) {
+    const y = startY + i * Math.max(8, height * 0.017) + Math.sin(timeS * 0.35 + i * 0.8) * (1 + amplitude * 5);
+    const x1 = width * (0.1 + ((i * 7) % 11) / 100);
+    const x2 = width * (0.72 + ((i * 5) % 18) / 100);
+    const mid = (x1 + x2) / 2;
+    const bow = Math.sin(i * 1.7 + timeS * 0.16) * (4 + energy * 16);
+    const alpha = Math.min(0.34, 0.05 + energy * 0.12 + (i % 3 === 0 ? 0.08 : 0));
+    ctx.strokeStyle = rgba(i % 4 === 0 ? palette.accent : palette.warm, alpha);
+    ctx.lineWidth = i % 3 === 0 ? 1.2 + energy * 1.7 : 0.75 + energy;
+    ctx.beginPath();
+    ctx.moveTo(x1, y);
+    if (ctx.quadraticCurveTo) ctx.quadraticCurveTo(mid, y + bow, x2, y + Math.sin(i) * 3);
+    else ctx.lineTo(x2, y + bow * 0.35);
+    ctx.stroke();
+  }
+}
+
+function drawRuptureStrokes(ctx, width, height, frame, timeS) {
+  const { palette, grammar, onset, energy, state } = frame;
+  const rupture = Math.max(onset, state === "aug2" ? 0.85 : 0, state === "tahwil" ? 0.32 : 0) * grammar.ruptureAlpha;
+  if (rupture < 0.025) return;
+  const cx = width * 0.5;
+  const cy = height * (0.42 - energy * 0.08);
+  const spread = Math.min(width, height) * (0.12 + rupture * 0.18);
+  ctx.globalCompositeOperation = "screen";
+  for (let i = 0; i < 3; i += 1) {
+    const offset = (i - 1) * spread * 0.28;
+    const swing = Math.sin(timeS * 0.9 + i) * spread * 0.08;
+    ctx.strokeStyle = rgba(i === 1 ? palette.accent : palette.warm, Math.min(0.62, 0.18 + rupture * 0.55));
+    ctx.lineWidth = 1.4 + rupture * 6 - i * 0.35;
+    ctx.beginPath();
+    ctx.moveTo(cx - spread + offset, cy + spread * 0.55 + swing);
+    ctx.lineTo(cx + spread * 0.34 + offset, cy - spread * 0.52 - swing);
+    ctx.stroke();
+  }
 }
 
 function drawCommandPulses(ctx, width, height, frame, timeS, commandPulses) {
@@ -226,7 +403,7 @@ function drawCommandPulses(ctx, width, height, frame, timeS, commandPulses) {
 
 function drawLayer(ctx, canvas, frame, timeS, windowLike, commandPulses = []) {
   const { width, height } = resizeCanvas(canvas, ctx, windowLike);
-  const { palette, amplitude, onset, energy, centroid, drift } = frame;
+  const { palette, energy, centroid } = frame;
   ctx.clearRect(0, 0, width, height);
   ctx.save?.();
   ctx.globalCompositeOperation = "source-over";
@@ -234,7 +411,7 @@ function drawLayer(ctx, canvas, frame, timeS, windowLike, commandPulses = []) {
   const baseGradient = ctx.createLinearGradient?.(0, 0, width, height);
   if (baseGradient?.addColorStop) {
     baseGradient.addColorStop(0, rgba(palette.base, 0.16 + energy * 0.08));
-    baseGradient.addColorStop(0.5, rgba(palette.cool, 0.04 + amplitude * 0.08));
+    baseGradient.addColorStop(0.46, rgba(palette.cool, 0.04 + centroid * 0.08));
     baseGradient.addColorStop(1, rgba(palette.warm, 0.06 + energy * 0.1));
     ctx.fillStyle = baseGradient;
     ctx.fillRect(0, 0, width, height);
@@ -242,73 +419,10 @@ function drawLayer(ctx, canvas, frame, timeS, windowLike, commandPulses = []) {
 
   ctx.globalCompositeOperation = "screen";
 
-  const horizon = height * (0.58 - centroid * 0.12);
-  for (let band = 0; band < 4; band += 1) {
-    const bandEnergy = energy * (1 - band * 0.13);
-    const ampPx = (18 + band * 10) * (0.35 + bandEnergy);
-    const phase = timeS * drift * (0.45 + band * 0.18) + band * 1.7;
-    const yBase = horizon + band * 42 - onset * 20;
-    const color = band % 2 === 0 ? palette.warm : palette.cool;
-
-    ctx.beginPath();
-    ctx.moveTo(0, height);
-    for (let x = 0; x <= width; x += Math.max(10, width / 90)) {
-      const n =
-        Math.sin(x * 0.006 + phase) * 0.62 +
-        Math.sin(x * 0.014 - phase * 0.7) * 0.38;
-      ctx.lineTo(x, yBase + n * ampPx);
-    }
-    ctx.lineTo(width, height);
-    ctx.closePath();
-    ctx.fillStyle = rgba(color, 0.055 + bandEnergy * 0.13);
-    ctx.fill();
-
-    ctx.beginPath();
-    for (let x = 0; x <= width; x += Math.max(10, width / 100)) {
-      const n =
-        Math.sin(x * 0.007 + phase * 1.2) * 0.7 +
-        Math.sin(x * 0.019 - phase) * 0.3;
-      const y = yBase + n * ampPx;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = rgba(color, 0.12 + bandEnergy * 0.24);
-    ctx.lineWidth = 1 + bandEnergy * 2.6;
-    ctx.stroke();
-  }
-
-  const pillarCount = 9;
-  const pillarAlpha = 0.035 + onset * 0.18;
-  for (let i = 0; i < pillarCount; i += 1) {
-    const x = (width / (pillarCount + 1)) * (i + 1);
-    const sway = Math.sin(timeS * 0.7 + i) * (8 + energy * 22);
-    const top = height * (0.12 + ((i * 17) % 23) / 100);
-    const bottom = height * (0.82 + Math.sin(i) * 0.04);
-    const grad = ctx.createLinearGradient?.(x, top, x + sway, bottom);
-    if (grad?.addColorStop) {
-      grad.addColorStop(0, rgba(palette.accent, 0));
-      grad.addColorStop(0.5, rgba(palette.accent, pillarAlpha));
-      grad.addColorStop(1, rgba(palette.cool, 0));
-      ctx.strokeStyle = grad;
-    } else {
-      ctx.strokeStyle = rgba(palette.accent, pillarAlpha);
-    }
-    ctx.lineWidth = 1 + energy * 1.8;
-    ctx.beginPath();
-    ctx.moveTo(x, top);
-    ctx.lineTo(x + sway, bottom);
-    ctx.stroke();
-  }
-
-  if (onset > 0.15) {
-    ctx.globalCompositeOperation = "screen";
-    ctx.strokeStyle = rgba(palette.accent, Math.min(0.24, onset * 0.22));
-    ctx.lineWidth = 1 + onset * 8;
-    ctx.beginPath();
-    ctx.moveTo(width * 0.08, horizon - onset * 70);
-    ctx.lineTo(width * 0.92, horizon - onset * 70);
-    ctx.stroke();
-  }
+  drawLampGlow(ctx, width, height, frame, timeS);
+  drawThresholdArchitecture(ctx, width, height, frame, timeS);
+  drawManuscriptLines(ctx, width, height, frame, timeS);
+  drawRuptureStrokes(ctx, width, height, frame, timeS);
 
   drawCommandPulses(ctx, width, height, frame, timeS, commandPulses);
 
@@ -554,6 +668,8 @@ if (isDirectNodeExecution) {
         beginPath: () => calls.push(["beginPath"]),
         moveTo: (...args) => calls.push(["moveTo", ...args]),
         lineTo: (...args) => calls.push(["lineTo", ...args]),
+        bezierCurveTo: (...args) => calls.push(["bezierCurveTo", ...args]),
+        quadraticCurveTo: (...args) => calls.push(["quadraticCurveTo", ...args]),
         closePath: () => calls.push(["closePath"]),
         arc: (...args) => calls.push(["arc", ...args]),
         fill: () => calls.push(["fill"]),
@@ -606,6 +722,13 @@ if (isDirectNodeExecution) {
     assert.equal(frameOut.state, "tahwil");
     assert.ok(frameOut.energy <= 1);
     assert.deepEqual(frameOut.palette, PALETTES.tahwil);
+    assert.equal(frameOut.grammar.name, "upper threshold");
+  });
+
+  t("getVisualGrammarForState falls back to quiet and distinguishes structural states", () => {
+    assert.equal(getVisualGrammarForState("unknown").name, "manuscript hush");
+    assert.ok(getVisualGrammarForState("aug2").ruptureAlpha > getVisualGrammarForState("quiet").ruptureAlpha);
+    assert.ok(getVisualGrammarForState("tahwil").opening > getVisualGrammarForState("approach").opening);
   });
 
   t("isCommandPatch ignores lifecycle/replay patches and accepts visual patches", () => {
@@ -647,6 +770,7 @@ if (isDirectNodeExecution) {
     assert.equal(layer.getFeatures().hijaz_state, "aug2");
     assert.ok(layer.getFrame().energy > 0);
     assert.ok(layer.canvas.calls.some((call) => call[0] === "stroke"));
+    assert.ok(layer.canvas.calls.some((call) => call[0] === "bezierCurveTo"));
     layer.stop();
   });
 
