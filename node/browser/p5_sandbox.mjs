@@ -57,6 +57,35 @@ function buildSandboxSrc(sketchId, slot) {
   return `/p5/sandbox?${params.toString()}`;
 }
 
+// Default figurative fallback mounted when a sketch is retired because
+// it crashed (heartbeat timeout or {type:"error"} postMessage). A still
+// DOM motif — spec §1 is "figurative, not abstract": candle flame as a
+// recognizable still image rather than a flow field or particle grid.
+// Authors can override with their own fallbackFactory option.
+function defaultFallbackFactory(documentLike, { slot, reason }) {
+  const el = documentLike.createElement("div");
+  el.dataset.flbSketchFallback = "1";
+  el.dataset.flbFallbackReason = reason;
+  el.dataset.flbFallbackSlot = slot;
+  const isBackground = slot === "background";
+  const sizeCss = isBackground
+    ? "width: 100%; height: 100%;"
+    : "width: 100%; height: 100%;";
+  el.style = el.style ?? {};
+  el.style.cssText = [
+    "display: flex",
+    "align-items: center",
+    "justify-content: center",
+    "pointer-events: none",
+    sizeCss,
+  ].join("; ");
+  // Single <svg> candle flame — teardrop with a subtle inner highlight.
+  // Inline markup keeps the fallback self-contained (no extra fetch)
+  // and renders under the same origin as the stage, unlike the iframe.
+  el.innerHTML = `<svg viewBox="-24 -40 48 80" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="candle flame"><path d="M 0 -36 C 14 -18, 14 2, 4 14 C -2 20, 2 26, 0 28 C -2 26, 2 20, -4 14 C -14 2, -14 -18, 0 -36 Z" fill="#ffb347" opacity="0.92"/><path d="M 0 -24 C 6 -12, 6 2, 1 8 C -1 12, 1 16, 0 18 C -1 16, 1 12, -1 8 C -6 2, -6 -12, 0 -24 Z" fill="#fff3c0" opacity="0.85"/></svg>`;
+  return el;
+}
+
 const SKETCH_SIZES = {
   small: { w: 300, h: 300 },
   medium: { w: 500, h: 500 },
@@ -110,8 +139,11 @@ export function createP5Sandbox({
   onRetire = () => {},
   onSketchError = () => {},
   expectedOrigin = documentLike?.defaultView?.location?.origin ?? null,
+  fallbackFactory,
 } = {}) {
   if (!mount) throw new Error("mount is required");
+  const factoryForFallback =
+    fallbackFactory ?? ((ctx) => defaultFallbackFactory(documentLike, ctx));
 
   const entries = new Map(); // sketch_id → {iframe, slot, createdAt, lastHeartbeat, ready}
   let featuresLatest = {
@@ -172,7 +204,7 @@ export function createP5Sandbox({
       const grace = nowMs - entry.createdAt < warmupGraceMs;
       const since = nowMs - entry.lastHeartbeat;
       if (!grace && since >= heartbeatTimeoutMs) {
-        retireInternal(sketchId, "heartbeat-timeout");
+        retireAndReplace(sketchId, "heartbeat-timeout");
       }
     }
   }
@@ -218,8 +250,12 @@ export function createP5Sandbox({
         sourceEntry.ready = true;
         sourceEntry.lastHeartbeat = now();
       } else if (parsed.data.type === "error") {
-        sourceEntry.lastHeartbeat = now(); // errors count as alive
+        // A sketch that throws is dead weight — don't wait for the
+        // heartbeat watchdog. Fire onSketchError first (caller may
+        // log it), then retire and replace with a figurative DOM
+        // fallback so the slot isn't left blank.
         onSketchError({ sketch_id: sourceEntry.sketch_id, message: parsed.data.message });
+        retireAndReplace(sourceEntry.sketch_id, "sketch-error");
       }
     };
     (documentLike.defaultView ?? globalThis).addEventListener("message", messageListener);
@@ -268,7 +304,7 @@ export function createP5Sandbox({
 
   function retireInternal(sketchId, reason = "retire") {
     const entry = entries.get(sketchId);
-    if (!entry) return;
+    if (!entry) return null;
     try {
       entry.iframe.remove();
     } catch { /* best effort */ }
@@ -278,6 +314,30 @@ export function createP5Sandbox({
     if (entries.size === 0) {
       if (rafHandle != null && cancelRafImpl) cancelRafImpl(rafHandle);
       rafHandle = null;
+    }
+    return entry;
+  }
+
+  // Called on crash paths — heartbeat-timeout (watchdog) and
+  // {type:"error"} postMessage from the bridge. Retires the iframe
+  // AND mounts a figurative DOM fallback in its place so the slot is
+  // never left empty (per spec §1: always figurative, never abstract).
+  // retireSketch() — the patch-driven retire — does NOT go through here
+  // because the author is retiring by intent, not reacting to a crash.
+  function retireAndReplace(sketchId, reason) {
+    const entry = retireInternal(sketchId, reason);
+    if (!entry) return;
+    let fallback = null;
+    try {
+      fallback = factoryForFallback({ slot: entry.slot, sketch_id: sketchId, reason });
+    } catch {
+      fallback = null;
+    }
+    if (!fallback) return;
+    try {
+      mount.appendChild(fallback);
+    } catch {
+      /* best effort */
     }
   }
 
@@ -623,6 +683,63 @@ if (isDirectNodeExecution) {
     assert.equal(sandbox._entries.size, 1);
     assert.equal(mount.children.length, 1);
     assert.match(mount.children[0].src, /^\/p5\/sandbox\?sketch_id=r1&slot=localized$/);
+  });
+
+  await t("{type:'error'} postMessage retires the iframe AND mounts a figurative DOM fallback", () => {
+    const retired = [];
+    const errors = [];
+    const { sandbox, documentLike, mount } = makeSandbox({
+      onRetire: (info) => retired.push(info),
+      onSketchError: (info) => errors.push(info),
+    });
+    sandbox.mountLocalized({ sketch_id: "boom_1", position: "center", size: "small" });
+    assert.equal(mount.children.length, 1);
+    const iframe = mount.children[0];
+    documentLike.defaultView.dispatchMessage(
+      iframe.contentWindow,
+      { type: "error", message: "TypeError: p is not defined" },
+    );
+    // Iframe removed; a fallback SVG motif appears in the same slot.
+    assert.equal(sandbox._entries.size, 0);
+    assert.equal(mount.children.length, 1);
+    const fallback = mount.children[0];
+    assert.equal(fallback.dataset.flbSketchFallback, "1");
+    assert.equal(fallback.dataset.flbFallbackReason, "sketch-error");
+    assert.ok(/candle flame/.test(fallback.innerHTML || ""), "fallback should be figurative (candle flame)");
+    // onSketchError fires; onRetire fires with the crash reason.
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].message, "TypeError: p is not defined");
+    assert.equal(retired.length, 1);
+    assert.equal(retired[0].reason, "sketch-error");
+  });
+
+  await t("heartbeat timeout also routes through retireAndReplace (same fallback path)", () => {
+    let clock = 100;
+    const retired = [];
+    const { sandbox, mount, interval } = makeSandbox({
+      now: () => clock,
+      heartbeatTimeoutMs: 2000,
+      warmupGraceMs: 3000,
+      onRetire: (info) => retired.push(info),
+    });
+    sandbox.mountLocalized({ sketch_id: "silent_1", position: "center", size: "small" });
+    clock = 100 + 3001 + 2001;
+    interval.tick();
+    assert.equal(sandbox._entries.size, 0);
+    // Fallback mounted with the heartbeat-timeout reason.
+    assert.equal(mount.children.length, 1);
+    assert.equal(mount.children[0].dataset.flbSketchFallback, "1");
+    assert.equal(mount.children[0].dataset.flbFallbackReason, "heartbeat-timeout");
+    assert.equal(retired[0].reason, "heartbeat-timeout");
+  });
+
+  await t("patch-driven retireSketch does NOT mount a fallback (crash-only path)", () => {
+    const { sandbox, mount } = makeSandbox();
+    sandbox.mountLocalized({ sketch_id: "bye_1", position: "center", size: "small" });
+    assert.equal(mount.children.length, 1);
+    sandbox.retireSketch("bye_1");
+    // No fallback: the author retired by intent, not because of a crash.
+    assert.equal(mount.children.length, 0);
   });
 
   await t("foreign origin is dropped without updating heartbeat (Fix 1 gate)", () => {
