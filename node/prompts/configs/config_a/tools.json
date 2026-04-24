@@ -64,7 +64,7 @@
   },
   {
     "name": "addSVG",
-    "description": "Place a symbolic or abstract drawn form on the scene. You generate real inline SVG markup for the renderer to place. Use forms when the music has structural events (aug2 leap, tahwil, phrase climax). Returns the new element_id.",
+    "description": "Place a symbolic drawn form on the scene. You generate real inline SVG markup for the renderer to place. Use forms when the music has structural events (aug2 leap, tahwil, phrase climax), and keep them inside the signature visual grammar: threshold or doorframe, manuscript line, stone plane, lamp glow, textile edge, held architectural span. Returns the new element_id.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -186,7 +186,7 @@
   },
   {
     "name": "setBackground",
-    "description": "Shift the atmospheric background. Provide a real CSS background value. Backgrounds persist indefinitely until you change them with another setBackground call — there is no automatic fade. Use rarely: tahwil, extended silence, when accumulated scene density demands a new absorbing atmosphere.",
+    "description": "Shift the atmospheric background. Provide a real CSS background value. Backgrounds persist indefinitely until you change them with another setBackground call — there is no automatic fade. Use rarely for performance-arc structural moves: tahwil, extended silence, a climax, final-tableau settling, or when accumulated scene density demands a new absorbing atmosphere.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -214,7 +214,7 @@
   },
   {
     "name": "addCompositeScene",
-    "description": "Place 2 to 5 related visual elements in one call, grouped as a composition. Use this when the music asks for a layered response — multiple elements entering together that belong to the same moment. Each element in the group gets its own element_id but shares a composition_group_id that links them. The group can later be faded together by calling fadeElement with the composition_group_id.\n\nUse this tool for moments of sustained intensity, for climaxes, for tahwil arrivals where the scene needs to commit to a new register, or for atmospheric foundations where a text + image + svg combination grounds a new section. Do not use it for every cycle — a scene of entirely composite groups is as monotonous as a scene of entirely single elements.\n\nEach element in the 'elements' array follows the same structure as the single-element tools: type is 'text', 'svg', or 'image'; other fields match the individual tool's required fields for that type.",
+    "description": "Place 2 to 5 related visual elements in one call, grouped as a composition. Use this when the music asks for a layered response — multiple elements entering together that belong to the same moment. Each element in the group gets its own element_id but shares a composition_group_id that links them. The group can later be faded together by calling fadeElement with the composition_group_id.\n\nUse this tool for moments of sustained intensity, for climaxes, for tahwil arrivals where the scene needs to commit to a new register, for atmospheric foundations where a text + image + svg combination grounds a new section, or for the final tableau when existing motifs need to lock into one composed image. Do not use it for every cycle — a scene of entirely composite groups is as monotonous as a scene of entirely single elements.\n\nEach element in the 'elements' array follows the same structure as the single-element tools: type is 'text', 'svg', or 'image'; other fields match the individual tool's required fields for that type.",
     "input_schema": {
       "type": "object",
       "properties": {

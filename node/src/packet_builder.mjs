@@ -10,14 +10,27 @@ function stripDebug(cycle) {
   return rest;
 }
 
-function formatUserMessage(cycle, sceneStateSummary) {
+function formatPerformancePosition(cycle, { cycleOrdinal = null, cyclesTotal = null } = {}) {
+  const ordinal = Number.isInteger(cycleOrdinal) ? cycleOrdinal + 1 : null;
+  const total = Number.isInteger(cyclesTotal) && cyclesTotal > 0 ? cyclesTotal : null;
+  if (ordinal && total) {
+    const progressPct = Math.max(0, Math.min(100, Math.round((ordinal / total) * 100)));
+    return [
+      `You are receiving cycle ${cycle.cycle_index} of the performance.`,
+      `PERFORMANCE POSITION: selected-run cycle ${ordinal} of ${total} (${progressPct}% through the run).`,
+    ];
+  }
+  return [`You are receiving cycle ${cycle.cycle_index} of the performance.`];
+}
+
+function formatUserMessage(cycle, sceneStateSummary, performancePosition = {}) {
   const block1 = JSON.stringify(cycle.block_1_scalars, null, 2);
   const block2 = cycle.block_2_summary;
   const sparks = cycle.block_3_sparklines;
   const { rms, onset, centroid } = sparks;
 
   return [
-    `You are receiving cycle ${cycle.cycle_index} of the performance.`,
+    ...formatPerformancePosition(cycle, performancePosition),
     ``,
     `BLOCK 1 — SCALAR SUMMARY (last 4 seconds):`,
     block1,
@@ -51,9 +64,11 @@ export function buildPacket({
   maxTokens = 4000,
   moodBoardBlocks = [],
   selfFrameUserBlocks = [],
+  cycleOrdinal = null,
+  cyclesTotal = null,
 }) {
   const cleanCycle = stripDebug(cycle);
-  const userText = formatUserMessage(cleanCycle, sceneStateSummary);
+  const userText = formatUserMessage(cleanCycle, sceneStateSummary, { cycleOrdinal, cyclesTotal });
 
   // When mood-board blocks are present, the cache breakpoint moves from the
   // medium_rules text block to a trailing user-content text block *after* the
@@ -174,6 +189,20 @@ if (isDirectNodeExecution) {
     assert.deepEqual(packet.messages[0].content[moodBoardBlocks.length - 1].cache_control, { type: "ephemeral" });
     assert.equal(packet.messages[0].content[moodBoardBlocks.length].type, "text");
     assert.match(packet.messages[0].content[moodBoardBlocks.length].text, /cycle 3/);
+  });
+
+  t("with cycle position, buildPacket tells Opus progress through the selected run", () => {
+    const packet = buildPacket({
+      cycle: fakeCycle,
+      sceneStateSummary: "empty",
+      hijazBase: "BASE",
+      mediumRules: "RULES",
+      tools: [],
+      model: "m",
+      cycleOrdinal: 8,
+      cyclesTotal: 16,
+    });
+    assert.match(packet.messages[0].content, /PERFORMANCE POSITION: selected-run cycle 9 of 16 \(56% through the run\)/);
   });
 
   t("with self-frame user blocks, messages[0].content becomes an array with user text first", () => {
