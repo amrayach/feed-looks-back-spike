@@ -14,6 +14,26 @@ const {
   IMPULSE_DEFAULT_SMOOTHING_MS,
 } = await import(sharedUrl);
 
+// v6.2: motion preset kernels. Each preset runs as an "audio-parameterized
+// response curve" — it reads the live feature_bus value on every rAF tick
+// and computes its own output. This is deliberately NOT a pre-scripted
+// keyframe animation: the kernel's shape (sine/decay/wander) is fixed,
+// but its amplitude and phase respond to the audio signal in real time.
+//
+// Each kernel returns contributions to a separate "motion state" slot
+// that composes with explicit reactivity bindings (multiplicative for
+// scale, additive for rotation/translate). That way an element can
+// carry BOTH a motion preset AND explicit bindings without one
+// stomping the other.
+
+export const MOTION_KERNEL_DEFAULTS = Object.freeze({
+  breathe: { feature: "hijaz_intensity", frequencyHz: 0.2, magnitude: 0.04 },
+  pulse:   { feature: "onset_strength",  decayMs: 300,     magnitude: 0.1  },
+  orbit:   { feature: "amplitude",       frequencyHz: 0.1, magnitude: 8    },
+  drift:   { feature: "hijaz_intensity", frequencyHz: 0.06, magnitude: 10  },
+  tremble: { feature: "onset_strength",  magnitude: 2                      },
+});
+
 // Numeric encoding for hijaz_state enum (authors gate via map.in=[N,N]).
 // Kept here rather than in patch_protocol.mjs because it's strictly a
 // binding-engine convention — the protocol sees the raw string.
@@ -54,6 +74,31 @@ export function smoothingFor(binding) {
   return binding.map.curve === "impulse" ? IMPULSE_DEFAULT_SMOOTHING_MS : DEFAULT_SMOOTHING_MS;
 }
 
+// Compose explicit reactivity state with motion kernel contributions.
+// Returned shape has the same keys as `state` so formatTransform /
+// filter writers can read one merged object without branching.
+function composeMotion(state, motionState) {
+  if (!motionState) return state;
+  const out = { ...state };
+  // scale is multiplicative: a breathe kernel with factor 1.03 on an
+  // element with explicit scale 1.2 lands at 1.236.
+  if (motionState.scaleFactor !== undefined) {
+    const base = out.scale ?? 1;
+    out.scale = base * motionState.scaleFactor;
+  }
+  // rotation / translate are additive.
+  if (motionState.rotationDelta !== undefined) {
+    out.rotation = (out.rotation ?? 0) + motionState.rotationDelta;
+  }
+  if (motionState.translateXDelta !== undefined) {
+    out.translateX = (out.translateX ?? 0) + motionState.translateXDelta;
+  }
+  if (motionState.translateYDelta !== undefined) {
+    out.translateY = (out.translateY ?? 0) + motionState.translateYDelta;
+  }
+  return out;
+}
+
 function formatTransform(state) {
   const parts = [];
   for (const key of TRANSFORM_KEY_ORDER) {
@@ -83,7 +128,110 @@ function writePerElementState(domNode, state) {
   const transform = formatTransform(state);
   if (transform.length > 0) domNode.style.transform = transform;
   if (state.opacity !== undefined) domNode.style.opacity = String(state.opacity);
-  if (state.color_hue !== undefined) domNode.style.filter = `hue-rotate(${state.color_hue}deg)`;
+  // Compose CSS filter from hue-rotate + blur + saturate. Absent keys
+  // contribute nothing; when every filter-related key is absent the
+  // element's `filter` property is not written (keeps untouched
+  // elements at their default `filter: none`).
+  const filters = [];
+  if (state.color_hue !== undefined) filters.push(`hue-rotate(${state.color_hue}deg)`);
+  if (state.blur !== undefined) filters.push(`blur(${state.blur}px)`);
+  if (state.saturation !== undefined) filters.push(`saturate(${state.saturation})`);
+  if (filters.length > 0) domNode.style.filter = filters.join(" ");
+}
+
+// Create a live kernel. options.intensity scales the kernel's magnitude.
+// options.feature overrides the preset's default feature. t0 is the
+// mount time — kernels are phase-aligned relative to mount so every
+// element isn't oscillating in unison with every other element using
+// the same preset.
+export function createMotionKernel(preset, { intensity = 1, feature = null, t0 = 0 } = {}) {
+  const defaults = MOTION_KERNEL_DEFAULTS[preset];
+  if (!defaults) return null;
+  const pickedFeature = feature ?? defaults.feature;
+
+  // Small pseudo-random per-kernel seed so parallel elements don't
+  // land in exact phase lock. Deterministic given t0.
+  const phaseOffset = Math.abs(Math.sin(t0 * 0.001) * 1000) % 1000;
+
+  // Tracking state for event-driven kernels (pulse, tremble). Updated
+  // by observeFeature and consumed by update(nowMs).
+  let lastOnsetMs = -Infinity;
+  let lastJitter = 0;
+
+  return {
+    preset,
+    feature: pickedFeature,
+    observeFeature(rawValue, nowMs) {
+      // Normalize to number for event detection. Boolean hijaz_tahwil
+      // is coerced; enum hijaz_state is coerced upstream via
+      // coerceFeatureValue — here we just need "is it an impulse?"
+      const numeric =
+        typeof rawValue === "boolean" ? (rawValue ? 1 : 0) :
+        typeof rawValue === "number" ? rawValue : 0;
+      if (preset === "pulse" || preset === "tremble") {
+        // Impulse threshold: a fresh event re-triggers the kernel.
+        if (numeric >= 0.5) lastOnsetMs = nowMs;
+      }
+      if (preset === "tremble") {
+        // Update jitter lazily on observation; the rAF tick still reads it.
+        lastJitter = (numeric - 0.5) * 2;
+      }
+    },
+    update(nowMs, currentFeatureValue) {
+      const contribution = {};
+      const magnitude = defaults.magnitude * intensity;
+      const t = (nowMs + phaseOffset) / 1000;
+      switch (preset) {
+        case "breathe": {
+          // Slow sinusoid on scale, amplitude-modulated by the feature.
+          const featureScale = typeof currentFeatureValue === "number"
+            ? Math.max(0, Math.min(1, currentFeatureValue))
+            : 0;
+          const envelope = 0.5 + 0.5 * featureScale;
+          contribution.scaleFactor = 1 + magnitude * envelope * Math.sin(t * 2 * Math.PI * defaults.frequencyHz);
+          break;
+        }
+        case "pulse": {
+          // Exponential decay on scale from the most recent onset.
+          const dt = nowMs - lastOnsetMs;
+          const decay = dt >= 0 ? Math.exp(-dt / defaults.decayMs) : 0;
+          contribution.scaleFactor = 1 + magnitude * decay;
+          break;
+        }
+        case "orbit": {
+          // Circular drift in translate space. Radius scales with feature.
+          const featureScale = typeof currentFeatureValue === "number"
+            ? Math.max(0, Math.min(1, currentFeatureValue))
+            : 0;
+          const radius = magnitude * featureScale;
+          const omega = t * 2 * Math.PI * defaults.frequencyHz;
+          contribution.translateXDelta = radius * Math.cos(omega);
+          contribution.translateYDelta = radius * Math.sin(omega);
+          break;
+        }
+        case "drift": {
+          // Composite slow wander: two offset sines on each axis. Not
+          // Perlin; a figurative low-frequency wobble the scene reads
+          // as "the breeze moves this thing a little".
+          const omega = t * 2 * Math.PI * defaults.frequencyHz;
+          contribution.translateXDelta =
+            magnitude * (0.6 * Math.sin(omega) + 0.4 * Math.sin(omega * 1.7 + 1.1));
+          contribution.translateYDelta =
+            magnitude * (0.5 * Math.cos(omega * 0.9) + 0.5 * Math.sin(omega * 1.3 + 0.4));
+          break;
+        }
+        case "tremble": {
+          // Small rotation jitter that re-seeds on each onset. Between
+          // onsets the jitter decays linearly over ~400 ms back to 0.
+          const dt = nowMs - lastOnsetMs;
+          const decay = dt < 400 ? Math.max(0, 1 - dt / 400) : 0;
+          contribution.rotationDelta = magnitude * lastJitter * decay;
+          break;
+        }
+      }
+      return contribution;
+    },
+  };
 }
 
 export function createBindingEngine({
@@ -120,51 +268,88 @@ export function createBindingEngine({
       for (const binding of entry.bindings) {
         entry.state[binding.property] = binding.lerper.update(nowMs);
       }
-      writePerElementState(entry.domNode, entry.state);
+      // v6.2: run motion kernel (if attached) and compose its
+      // contribution with the explicit reactivity state. bus.last()
+      // is read each tick so the kernel stays current even between
+      // explicit retarget calls.
+      let merged = entry.state;
+      if (entry.motion && entry.motion.kernel) {
+        const featureValue = bus.last(entry.motion.kernel.feature);
+        const contribution = entry.motion.kernel.update(nowMs, featureValue);
+        entry.motion.state = contribution;
+        merged = composeMotion(entry.state, contribution);
+      }
+      writePerElementState(entry.domNode, merged);
     }
     scheduleTick();
   }
 
-  function mount(elementId, domNode, reactivity) {
-    if (!reactivity || reactivity.length === 0) return;
+  function mount(elementId, domNode, reactivity, motion = null) {
+    const hasReactivity = Array.isArray(reactivity) && reactivity.length > 0;
+    const hasMotion = motion && typeof motion === "object" && typeof motion.preset === "string";
+    if (!hasReactivity && !hasMotion) return;
     // Defensive: if this element is already mounted (replay replays an
     // element.add, for example), tear the old entry down first.
     if (entries.has(elementId)) unmount(elementId);
 
     const state = {};
     const bindings = [];
-    for (const raw of reactivity) {
-      const rest = restValueForBinding(raw);
-      state[raw.property] = rest;
-      const lerper = createLerper({
-        from: rest,
-        to: rest,
-        durationMs: smoothingFor(raw),
-        now: now(),
-        curve: raw.map.curve,
-      });
-      const unsubscribe = bus.subscribe(raw.feature, (value) => {
-        const numeric = coerceFeatureValue(raw.feature, value);
-        const target = mapInputToOutput({ value: numeric, map: raw.map });
-        lerper.retarget({ to: target, nowMs: now() });
-      });
-      bindings.push({ property: raw.property, lerper, unsubscribe });
+    if (hasReactivity) {
+      for (const raw of reactivity) {
+        const rest = restValueForBinding(raw);
+        state[raw.property] = rest;
+        const lerper = createLerper({
+          from: rest,
+          to: rest,
+          durationMs: smoothingFor(raw),
+          now: now(),
+          curve: raw.map.curve,
+        });
+        const unsubscribe = bus.subscribe(raw.feature, (value) => {
+          const numeric = coerceFeatureValue(raw.feature, value);
+          const target = mapInputToOutput({ value: numeric, map: raw.map });
+          lerper.retarget({ to: target, nowMs: now() });
+        });
+        bindings.push({ property: raw.property, lerper, unsubscribe });
+      }
     }
-    entries.set(elementId, { domNode, bindings, state });
+
+    // v6.2: attach a motion kernel if the element carries one. The
+    // kernel subscribes to its input feature so event-driven presets
+    // (pulse, tremble) can capture onset events even if the rAF tick
+    // doesn't hit at the same millisecond.
+    let motionEntry = null;
+    if (hasMotion) {
+      const kernel = createMotionKernel(motion.preset, {
+        intensity: typeof motion.intensity === "number" ? motion.intensity : 1,
+        feature: motion.feature ?? null,
+        t0: now(),
+      });
+      if (kernel) {
+        const unsubscribe = bus.subscribe(kernel.feature, (value) => {
+          kernel.observeFeature(value, now());
+        });
+        motionEntry = { kernel, unsubscribe, state: {} };
+      }
+    }
+
+    entries.set(elementId, { domNode, bindings, state, motion: motionEntry });
     writePerElementState(domNode, state);
 
     // Seed each binding with bus.last() if already present so late mounts
     // don't sit at rest until the next feature dispatch.
-    for (const binding of reactivity) {
-      const last = bus.last(binding.feature);
-      if (last !== undefined) {
-        const entry = entries.get(elementId);
-        if (!entry) break;
-        const lerperForBinding = entry.bindings.find((b) => b.property === binding.property);
-        if (lerperForBinding) {
-          const numeric = coerceFeatureValue(binding.feature, last);
-          const target = mapInputToOutput({ value: numeric, map: binding.map });
-          lerperForBinding.lerper.retarget({ to: target, nowMs: now() });
+    if (hasReactivity) {
+      for (const binding of reactivity) {
+        const last = bus.last(binding.feature);
+        if (last !== undefined) {
+          const entry = entries.get(elementId);
+          if (!entry) break;
+          const lerperForBinding = entry.bindings.find((b) => b.property === binding.property);
+          if (lerperForBinding) {
+            const numeric = coerceFeatureValue(binding.feature, last);
+            const target = mapInputToOutput({ value: numeric, map: binding.map });
+            lerperForBinding.lerper.retarget({ to: target, nowMs: now() });
+          }
         }
       }
     }
@@ -181,6 +366,11 @@ export function createBindingEngine({
       } catch {
         // best effort
       }
+    }
+    // v6.2: unsubscribe the motion kernel's feature subscription too
+    // so the bus drops its reference and the kernel can be GC'd.
+    if (entry.motion && typeof entry.motion.unsubscribe === "function") {
+      try { entry.motion.unsubscribe(); } catch { /* best effort */ }
     }
     entries.delete(elementId);
     stopLoopIfIdle();
@@ -474,6 +664,175 @@ if (isDirectNodeExecution) {
     // The late-seed call retargets the lerper from rest=0 to target=1 at mount time,
     // so after 100ms it reaches 1.0 under linear curve.
     assert.equal(node.style.opacity, "1");
+  });
+
+  t("writePerElementState composes hue-rotate + blur + saturate into a single filter string", () => {
+    // Reach into internals by mounting a synthetic reactivity array that
+    // covers all three filter properties and checking the filter output
+    // after a single tick.
+    const bus = createFeatureBus();
+    const raf = rafRunner();
+    let clock = 0;
+    const engine = createBindingEngine({
+      bus, rafImpl: raf.schedule, cancelRafImpl: raf.cancel, now: () => clock,
+    });
+    const node = new FakeElement();
+    engine.mount("elem_filter", node, [
+      { property: "color_hue",  feature: "hijaz_intensity", map: { in: [0, 1], out: [0, 45], curve: "linear" }, smoothing_ms: 10 },
+      { property: "blur",       feature: "amplitude",       map: { in: [0, 1], out: [0, 5],  curve: "linear" }, smoothing_ms: 10 },
+      { property: "saturation", feature: "amplitude",       map: { in: [0, 1], out: [1, 1.6],curve: "linear" }, smoothing_ms: 10 },
+    ]);
+    clock = 0;
+    bus.dispatch("hijaz_intensity", 1);
+    bus.dispatch("amplitude", 1);
+    clock = 20;
+    raf.tick(clock);
+    // All three filter functions appear, in the order hue-rotate → blur → saturate.
+    assert.match(node.style.filter, /^hue-rotate\(45deg\) blur\(5px\) saturate\(1\.6\)$/);
+  });
+
+  t("createMotionKernel breathe produces scaleFactor > 1 and < 1 across a full period", () => {
+    const kernel = createMotionKernel("breathe", { intensity: 1, t0: 0 });
+    // Default breathe frequencyHz = 0.2 → period = 5 s. Sample at 0, 1.25 s, 2.5 s, 3.75 s.
+    // Feature value 1 → envelope = 1.0.
+    const c0 = kernel.update(0, 1);
+    const c1 = kernel.update(1250, 1);   // quarter period — sin peak
+    const c2 = kernel.update(2500, 1);   // half period — sin 0
+    const c3 = kernel.update(3750, 1);   // 3/4 period — sin trough
+    assert.ok(c1.scaleFactor > c0.scaleFactor, "quarter-period scaleFactor should exceed start");
+    assert.ok(Math.abs(c2.scaleFactor - 1) < 0.01, "half-period should land near 1 (sin=0)");
+    assert.ok(c3.scaleFactor < 1, "three-quarter period scaleFactor should dip below 1");
+  });
+
+  t("createMotionKernel pulse peaks immediately after onset, decays toward 1", () => {
+    const kernel = createMotionKernel("pulse", { intensity: 1, t0: 0 });
+    kernel.observeFeature(1.0, 0);
+    const atPeak = kernel.update(0, 1);
+    const after150 = kernel.update(150, 1);
+    const after600 = kernel.update(600, 1);
+    // At peak: decay=1 → scaleFactor = 1 + magnitude = 1.1
+    assert.ok(Math.abs(atPeak.scaleFactor - 1.1) < 0.001);
+    // 150 ms in: decay ≈ exp(-0.5) ≈ 0.607 → scaleFactor ≈ 1.06
+    assert.ok(after150.scaleFactor < atPeak.scaleFactor);
+    assert.ok(after150.scaleFactor > 1);
+    // 600 ms in: decay ≈ exp(-2) ≈ 0.135 → scaleFactor ≈ 1.013
+    assert.ok(after600.scaleFactor < after150.scaleFactor);
+    assert.ok(after600.scaleFactor > 1);
+  });
+
+  t("createMotionKernel orbit returns translateX + translateY on the unit circle scaled by feature", () => {
+    const kernel = createMotionKernel("orbit", { intensity: 1, t0: 0 });
+    // feature = 1 → radius = magnitude * 1 = 8. Sample at t=0.
+    const c = kernel.update(0, 1);
+    // At t=0: cos(phase)=cos(phaseOffset), but radius = 8, so x² + y² ≈ 64.
+    const r2 = c.translateXDelta * c.translateXDelta + c.translateYDelta * c.translateYDelta;
+    assert.ok(Math.abs(r2 - 64) < 0.01, `orbit radius²=${r2}, expected ≈64`);
+    // Zero feature collapses radius to zero.
+    const c0 = kernel.update(0, 0);
+    assert.equal(c0.translateXDelta, 0);
+    assert.equal(c0.translateYDelta, 0);
+  });
+
+  t("createMotionKernel drift returns nonzero translateX/Y even with zero input feature (ambient wander)", () => {
+    // Drift does NOT gate on feature value — it's always on, at
+    // magnitude `magnitude * intensity`. Distinguishes drift from
+    // orbit/pulse/breathe (those all modulate by feature).
+    const kernel = createMotionKernel("drift", { intensity: 1, t0: 0 });
+    const samples = [0, 500, 1000, 2000].map((t) => kernel.update(t, 0));
+    const anyNonzero = samples.some((c) =>
+      Math.abs(c.translateXDelta) > 0.1 || Math.abs(c.translateYDelta) > 0.1,
+    );
+    assert.ok(anyNonzero, "drift kernel should produce motion even with feature=0");
+    // All samples are bounded by magnitude.
+    for (const c of samples) {
+      assert.ok(Math.abs(c.translateXDelta) <= 10.01);
+      assert.ok(Math.abs(c.translateYDelta) <= 10.01);
+    }
+  });
+
+  t("createMotionKernel tremble decays to zero after ~400 ms without a new observation", () => {
+    const kernel = createMotionKernel("tremble", { intensity: 1, t0: 0 });
+    kernel.observeFeature(1.0, 0);
+    const atOnset = kernel.update(0, 1);
+    const at500 = kernel.update(500, 0);
+    assert.ok(Math.abs(atOnset.rotationDelta) > 0, "rotation jitter should fire at onset");
+    assert.equal(at500.rotationDelta, 0, "tremble rotation should be back to 0 at 500 ms post-onset");
+  });
+
+  t("createMotionKernel returns null for unknown presets", () => {
+    assert.equal(createMotionKernel("shimmer"), null);
+    assert.equal(createMotionKernel(undefined), null);
+  });
+
+  t("mount with motion only (no reactivity) attaches a kernel and writes DOM each tick", () => {
+    const bus = createFeatureBus();
+    const raf = rafRunner();
+    let clock = 0;
+    const engine = createBindingEngine({
+      bus, rafImpl: raf.schedule, cancelRafImpl: raf.cancel, now: () => clock,
+    });
+    const node = new FakeElement();
+    engine.mount("elem_motion", node, null, { preset: "breathe", intensity: 1 });
+    // Kernel observes the feature stream:
+    clock = 0;
+    bus.dispatch("hijaz_intensity", 1);
+    // Tick to a quarter period (~1250 ms) — breathe should push scale > 1.
+    clock = 1250;
+    raf.tick(clock);
+    // `transform` contains a scale(...) greater than 1.
+    const scaleMatch = /scale\(([^)]+)\)/.exec(node.style.transform);
+    assert.ok(scaleMatch, "motion kernel should produce a scale transform");
+    assert.ok(parseFloat(scaleMatch[1]) > 1, `breathe at quarter-period should scale > 1, got ${scaleMatch[1]}`);
+  });
+
+  t("motion composes with explicit reactivity: scale is multiplied, rotation added", () => {
+    const bus = createFeatureBus();
+    const raf = rafRunner();
+    let clock = 0;
+    const engine = createBindingEngine({
+      bus, rafImpl: raf.schedule, cancelRafImpl: raf.cancel, now: () => clock,
+    });
+    const node = new FakeElement();
+    engine.mount(
+      "elem_combo",
+      node,
+      [
+        { property: "scale", feature: "amplitude", map: { in: [0, 1], out: [1.2, 1.2], curve: "linear" }, smoothing_ms: 10 },
+      ],
+      { preset: "pulse", intensity: 1 },
+    );
+    clock = 0;
+    bus.dispatch("amplitude", 1);      // reactivity → scale = 1.2
+    bus.dispatch("onset_strength", 1); // pulse kernel fires, scaleFactor ~1.1 at peak
+    clock = 20;
+    raf.tick(clock);
+    const scaleMatch = /scale\(([^)]+)\)/.exec(node.style.transform);
+    assert.ok(scaleMatch, "merged transform should carry scale");
+    // Expected composition: 1.2 * ~1.1 ≈ 1.32 (allow some slack for decay since dt=20 ms)
+    const scale = parseFloat(scaleMatch[1]);
+    assert.ok(scale > 1.2, `composed scale ${scale} should exceed reactivity-only 1.2`);
+    assert.ok(scale < 1.4, `composed scale ${scale} should not exceed reactivity*magnitude upper bound`);
+  });
+
+  t("unmount drops the motion kernel's feature subscription", () => {
+    const bus = createFeatureBus();
+    const raf = rafRunner();
+    let clock = 0;
+    const engine = createBindingEngine({
+      bus, rafImpl: raf.schedule, cancelRafImpl: raf.cancel, now: () => clock,
+    });
+    const node = new FakeElement();
+    engine.mount("elem_m", node, null, { preset: "pulse", intensity: 1 });
+    // One subscriber after mount (pulse → onset_strength).
+    // feature_bus exposes its subscriber count via .size on the subscription Set per feature.
+    // Since we don't have direct access, we use the behavioral check: after unmount, dispatching
+    // should not re-arm the kernel (no entry exists).
+    engine.unmount("elem_m");
+    clock = 0;
+    bus.dispatch("onset_strength", 1);
+    clock = 20;
+    // No error, no DOM write — entry was torn down cleanly.
+    assert.equal(engine._entries.size, 0);
   });
 
   t("re-mounting the same element_id tears down the previous entry's subscriptions", () => {

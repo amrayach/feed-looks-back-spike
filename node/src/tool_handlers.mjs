@@ -10,6 +10,8 @@ import {
 import { emitPatchesForToolResult } from "./patch_emitter.mjs";
 import {
   ReactivitySchema,
+  MotionSchema,
+  LAYER_TOKENS,
   TransformSpecSchema,
   PaletteTargetSchema,
   MorphTargetSchema,
@@ -49,6 +51,37 @@ function validateReactivity(raw) {
   return { ok: true, normalized };
 }
 
+// v6.2: validate an optional layer string against LAYER_TOKENS. null /
+// undefined → { ok, normalized: null } (meaning "use the per-type
+// default"). Unknown tokens return an error so an LLM typo fails
+// loudly rather than silently routing the element to the default band.
+function validateLayer(raw) {
+  if (raw === undefined || raw === null) return { ok: true, normalized: null };
+  if (typeof raw !== "string" || !LAYER_TOKENS.includes(raw)) {
+    return { error: `layer '${raw}' is not one of ${LAYER_TOKENS.join(", ")}` };
+  }
+  return { ok: true, normalized: raw };
+}
+
+// v6.2: validate an optional motion preset. A missing motion is legal
+// (the element simply has no kernel attached). Delegates to the strict
+// Zod schema so extras / Infinity / negative intensities reject here
+// rather than at patch-ingress time.
+function validateMotion(raw) {
+  if (raw === undefined || raw === null) return { ok: true, normalized: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { error: "motion must be an object" };
+  }
+  const parsed = MotionSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `motion invalid: ${issues}` };
+  }
+  return { ok: true, normalized: parsed.data };
+}
+
 function requireString(input, field) {
   const v = input[field];
   if (v === undefined || v === null) {
@@ -67,11 +100,17 @@ function handleAddText(state, input) {
   }
   const reactivity = validateReactivity(input.reactivity);
   if (reactivity.error) return { error: reactivity.error };
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
+  const motion = validateMotion(input.motion);
+  if (motion.error) return { error: motion.error };
   const id = addElement(state, {
     type: "text",
     content: { content: input.content, position: input.position, style: input.style },
     lifetime_s: input.lifetime_s ?? null,
     reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
   });
   return { element_id: id };
 }
@@ -83,6 +122,10 @@ function handleAddSVG(state, input) {
   }
   const reactivity = validateReactivity(input.reactivity);
   if (reactivity.error) return { error: reactivity.error };
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
+  const motion = validateMotion(input.motion);
+  if (motion.error) return { error: motion.error };
   const id = addElement(state, {
     type: "svg",
     content: {
@@ -92,6 +135,8 @@ function handleAddSVG(state, input) {
     },
     lifetime_s: input.lifetime_s,
     reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
   });
   return { element_id: id };
 }
@@ -103,11 +148,25 @@ function handleAddImage(state, input) {
   }
   const reactivity = validateReactivity(input.reactivity);
   if (reactivity.error) return { error: reactivity.error };
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
+  const motion = validateMotion(input.motion);
+  if (motion.error) return { error: motion.error };
+  // v6.2: images default to the TTL path (scene_state honors
+  // DEFAULT_LIFETIMES.image). An explicit null keeps the image
+  // permanent; an explicit numeric value overrides the TTL.
+  //
+  // Preserve `undefined` (sentinel for "use the default") so scene_state
+  // can apply DEFAULT_LIFETIMES[type]. Previously this handler collapsed
+  // `undefined` to `null`, forcing the image permanent and bypassing the
+  // new default TTL.
   const id = addElement(state, {
     type: "image",
     content: { query: input.query, position: input.position },
-    lifetime_s: input.lifetime_s ?? null,
+    lifetime_s: input.lifetime_s,
     reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
   });
   return { element_id: id };
 }
@@ -156,12 +215,15 @@ function handleAddP5Sketch(state, input) {
   if (typeof input.audio_reactive !== "boolean") {
     return { error: "field 'audio_reactive' must be a boolean" };
   }
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
   const { sketch_id, retired_id } = addP5SketchSlot(state, {
     position: input.position,
     size: input.size,
     code: input.code,
     audio_reactive: input.audio_reactive,
     lifetime_s: input.lifetime_s ?? null,
+    layer: layer.normalized,
   });
   return retired_id
     ? { sketch_id, retired_id }
@@ -199,7 +261,16 @@ function validateCompositeElement(el, index) {
   }
   const reactivity = validateReactivity(el.reactivity);
   if (reactivity.error) return { error: `${prefix}: ${reactivity.error}` };
-  return { ok: true, reactivity: reactivity.normalized };
+  const layer = validateLayer(el.layer);
+  if (layer.error) return { error: `${prefix}: ${layer.error}` };
+  const motion = validateMotion(el.motion);
+  if (motion.error) return { error: `${prefix}: ${motion.error}` };
+  return {
+    ok: true,
+    reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
+  };
 }
 
 function handleAddCompositeScene(state, input) {
@@ -214,13 +285,17 @@ function handleAddCompositeScene(state, input) {
 
   // Atomic validation pass — if any element is invalid the whole composite
   // is rejected before any state mutation. validateCompositeElement also
-  // normalizes each member's reactivity; capture those results here so the
-  // mutation pass below doesn't need to re-validate.
+  // normalizes each member's reactivity / layer / motion; capture those
+  // results here so the mutation pass below doesn't need to re-validate.
   const perMemberReactivity = [];
+  const perMemberLayer = [];
+  const perMemberMotion = [];
   for (let i = 0; i < input.elements.length; i += 1) {
     const result = validateCompositeElement(input.elements[i], i);
     if (result.error) return { error: result.error };
     perMemberReactivity.push(result.reactivity);
+    perMemberLayer.push(result.layer);
+    perMemberMotion.push(result.motion);
   }
 
   // Shared lifetime: explicit numeric value wins; otherwise if any member's
@@ -268,6 +343,8 @@ function handleAddCompositeScene(state, input) {
       content,
       lifetime_s: sharedLifetime,
       reactivity: perMemberReactivity[i],
+      layer: perMemberLayer[i],
+      motion: perMemberMotion[i],
     });
     elementIds.push(id);
   }
@@ -573,6 +650,21 @@ if (isDirectNodeExecution) {
     });
     assert.equal(r.element_id, "elem_0001");
     assert.equal(s.elements[0].content.query, "threshold light");
+    // v6.2: images now default to a TTL rather than permanent. The exact
+    // value lives in scene_state (IMAGE_DEFAULT_TTL_S); assert only that
+    // a finite positive number landed so the tests don't hard-code the
+    // constant.
+    assert.equal(typeof s.elements[0].lifetime_s, "number");
+    assert.ok(s.elements[0].lifetime_s > 0);
+  });
+
+  t("applyToolCall addImage with explicit lifetime_s: null keeps image permanent", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      name: "addImage",
+      input: { query: "anchor", position: "background", lifetime_s: null },
+    });
+    assert.ok(r.element_id);
     assert.equal(s.elements[0].lifetime_s, null);
   });
 
@@ -845,6 +937,33 @@ if (isDirectNodeExecution) {
   });
 
   t("applyToolCall addCompositeScene becomes permanent when any member type has null default lifetime", () => {
+    // v6.2: images now have a finite TTL default, so this invariant is
+    // exercised via text (which still defaults to null). The property
+    // under test — "a single permanent-default member makes the whole
+    // group permanent" — is unchanged.
+    const s = freshState(0, 10);
+    applyToolCall(s, {
+      type: "tool_use",
+      id: "t",
+      name: "addCompositeScene",
+      input: {
+        group_label: "g",
+        elements: [
+          { type: "svg", svg_markup: "<svg/>", position: "c", semantic_label: "x" },
+          { type: "text", content: "permanent", position: "c", style: "s" },
+        ],
+      },
+    });
+    assert.equal(s.elements[0].lifetime_s, null);
+    assert.equal(s.elements[1].lifetime_s, null);
+    assert.equal(s.elements[0].fades_at_elapsed_s, null);
+    assert.equal(s.elements[1].fades_at_elapsed_s, null);
+  });
+
+  t("applyToolCall addCompositeScene with svg + image uses max(default_lifetime) — both finite now", () => {
+    // v6.2 regression: svg=35, image=IMAGE_DEFAULT_TTL_S (25) → shared
+    // lifetime is max(35, 25) = 35. Neither member-default is null, so
+    // the composite is NOT forced permanent.
     const s = freshState(0, 10);
     applyToolCall(s, {
       type: "tool_use",
@@ -858,10 +977,8 @@ if (isDirectNodeExecution) {
         ],
       },
     });
-    assert.equal(s.elements[0].lifetime_s, null);
-    assert.equal(s.elements[1].lifetime_s, null);
-    assert.equal(s.elements[0].fades_at_elapsed_s, null);
-    assert.equal(s.elements[1].fades_at_elapsed_s, null);
+    assert.equal(s.elements[0].lifetime_s, 35);
+    assert.equal(s.elements[1].lifetime_s, 35);
   });
 
   t("applyToolCall addCompositeScene with only SVG members uses the timed SVG default", () => {
@@ -1540,6 +1657,126 @@ if (isDirectNodeExecution) {
     assert.equal(detailed.patches[0].type, "scene.pulse");
     assert.equal(detailed.patches[0].intensity, 0.4);
     assert.equal("color" in detailed.patches[0], false);
+  });
+
+  // ─── Reactivity + lifecycle (feature/reactivity-lifecycle) ────────
+  t("addText accepts optional layer + motion; invalid layer rejects", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r = applyToolCall(s, {
+      name: "addText",
+      input: {
+        content: "after", position: "center", style: "serif",
+        layer: "foreground",
+        motion: { preset: "breathe" },
+      },
+    });
+    assert.ok(r.element_id);
+    const stored = s.elements.find((e) => e.element_id === r.element_id);
+    assert.equal(stored.layer, "foreground");
+    assert.equal(stored.motion.preset, "breathe");
+    const bad = applyToolCall(s, {
+      name: "addText",
+      input: { content: "x", position: "c", style: "s", layer: "hud" },
+    });
+    assert.match(bad.error, /layer/);
+  });
+
+  t("addImage default lifetime is TTL (not null); explicit null overrides to permanent", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r1 = applyToolCall(s, {
+      name: "addImage",
+      input: { query: "lamp glow", position: "background" },
+    });
+    const r2 = applyToolCall(s, {
+      name: "addImage",
+      input: { query: "permanent anchor", position: "background", lifetime_s: null },
+    });
+    const e1 = s.elements.find((e) => e.element_id === r1.element_id);
+    const e2 = s.elements.find((e) => e.element_id === r2.element_id);
+    assert.equal(typeof e1.lifetime_s, "number");
+    assert.ok(e1.lifetime_s > 0);
+    assert.equal(e2.lifetime_s, null);
+  });
+
+  t("addP5Sketch accepts optional layer; invalid layer rejects", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const good = applyToolCall(s, {
+      name: "addP5Sketch",
+      input: {
+        position: "center", size: "medium", code: "noop()", audio_reactive: true,
+        layer: "midground",
+      },
+    });
+    assert.ok(good.sketch_id);
+    const stored = s.p5_sketches.find((x) => x.sketch_id === good.sketch_id);
+    assert.equal(stored.layer, "midground");
+    const bad = applyToolCall(s, {
+      name: "addP5Sketch",
+      input: {
+        position: "center", size: "medium", code: "noop()", audio_reactive: true,
+        layer: "overlay",
+      },
+    });
+    assert.match(bad.error, /layer/);
+  });
+
+  t("motion validator rejects unknown preset and Infinity intensity", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const badPreset = applyToolCall(s, {
+      name: "addSVG",
+      input: {
+        svg_markup: "<svg></svg>", position: "center", semantic_label: "x",
+        motion: { preset: "shimmer" },
+      },
+    });
+    assert.match(badPreset.error, /motion/);
+    const badIntensity = applyToolCall(s, {
+      name: "addSVG",
+      input: {
+        svg_markup: "<svg></svg>", position: "center", semantic_label: "x",
+        motion: { preset: "breathe", intensity: Infinity },
+      },
+    });
+    assert.match(badIntensity.error, /motion/);
+  });
+
+  t("addCompositeScene accepts per-member layer + motion; invalid member layer rejects atomically", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const ok = applyToolCall(s, {
+      name: "addCompositeScene",
+      input: {
+        group_label: "threshold arrival",
+        elements: [
+          { type: "text", content: "after", position: "lower-left", style: "serif",
+            layer: "foreground", motion: { preset: "breathe" } },
+          { type: "image", query: "lamp glow", position: "background", layer: "background" },
+        ],
+      },
+    });
+    assert.ok(ok.composition_group_id);
+    const txt = s.elements.find((e) => e.element_id === ok.element_ids[0]);
+    const img = s.elements.find((e) => e.element_id === ok.element_ids[1]);
+    assert.equal(txt.layer, "foreground");
+    assert.equal(txt.motion.preset, "breathe");
+    assert.equal(img.layer, "background");
+
+    const bad = applyToolCall(s, {
+      name: "addCompositeScene",
+      input: {
+        group_label: "bad composite",
+        elements: [
+          { type: "text", content: "a", position: "center", style: "s" },
+          { type: "text", content: "b", position: "c", style: "s", layer: "overlay" },
+        ],
+      },
+    });
+    assert.match(bad.error, /composite element 1/);
+    assert.equal(s.elements.length, 2, "bad composite did not touch state beyond the successful one");
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
