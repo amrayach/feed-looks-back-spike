@@ -402,6 +402,7 @@ if (isDirectNodeExecution) {
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "feature_bus.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "feature_replayer.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "binding_engine.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "p5_sandbox.mjs"));
   });
 
   await t("replays current state after hello handshake", async () => {
