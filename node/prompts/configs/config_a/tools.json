@@ -245,5 +245,55 @@
       },
       "required": ["elements", "group_label"]
     }
+  },
+  {
+    "name": "setP5Background",
+    "description": "Replace the background p5 sketch layer. Runs behind all other elements. Use for ambient, atmospheric scenes — a flickering oil-lamp interior, a slowly rippling textile, calligraphic strokes forming and fading. Sketches MUST depict recognizable things — no pure particle clouds, flow fields, or geometric noise loops. See hijaz_base.md §Sketches for details. Only one background slot; each call replaces the prior. Returns {sketch_id, retired_id?}.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Complete p5.js sketch as JavaScript. Runs in a sandboxed iframe. Access audio features via window.features: amplitude (0..1), onset_strength (0..1), spectral_centroid (Hz), hijaz_state (enum string), hijaz_intensity (0..1), hijaz_tahwil (boolean). No external network, no parent DOM access. Depict a recognizable thing — lantern, textile, stroke, doorway, etc. Avoid abstract particle or flow-field patterns."
+        },
+        "audio_reactive": {
+          "type": "boolean",
+          "description": "If true, window.features is populated every frame with live audio values. If false, the sketch runs independent of audio — use sparingly, for self-contained visual statements."
+        }
+      },
+      "required": ["code", "audio_reactive"]
+    }
+  },
+  {
+    "name": "addP5Sketch",
+    "description": "Place a localized p5.js sketch at a specific position. Used for gestural, short-lived visual responses — a lantern flickering, a hand drawing a line, a textile unfurling. Sketches MUST depict recognizable things. Up to 3 concurrent localized sketches; a 4th auto-retires the oldest (no rejection, you always get a sketch_id). Returns {sketch_id, retired_id?}.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "string",
+          "enum": ["top-left", "top-center", "top-right", "mid-left", "center", "mid-right", "bottom-left", "bottom-center", "bottom-right"],
+          "description": "One of the nine anchor positions."
+        },
+        "size": {
+          "type": "string",
+          "enum": ["small", "medium", "large"],
+          "description": "Sketch canvas size. small ≈ 300×300, medium ≈ 500×500, large ≈ 800×800."
+        },
+        "code": {
+          "type": "string",
+          "description": "Complete p5.js sketch as JavaScript. See setP5Background for the window.features contract and the figurative-only constraint."
+        },
+        "audio_reactive": {
+          "type": "boolean",
+          "description": "If true, window.features updates every frame. If false, the sketch is self-contained."
+        },
+        "lifetime_s": {
+          "type": "number",
+          "description": "Optional lifetime in seconds. Omit for default permanence; supply a number for transient gestures that should retire automatically."
+        }
+      },
+      "required": ["position", "size", "code", "audio_reactive"]
+    }
   }
 ]
