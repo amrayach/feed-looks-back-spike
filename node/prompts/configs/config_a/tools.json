@@ -27,7 +27,7 @@
           "items": {
             "type": "object",
             "properties": {
-              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue", "blur", "saturation"] },
               "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
               "map": {
                 "type": "object",
@@ -42,6 +42,21 @@
             },
             "required": ["property", "feature", "map"]
           }
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["background", "midground", "foreground"],
+          "description": "Optional depth band. Omit for the per-type default (text defaults to foreground). See hijaz_base.md §Motion presets for guidance."
+        },
+        "motion": {
+          "type": "object",
+          "description": "Optional motion preset. See hijaz_base.md §Motion presets. Composes with any explicit reactivity bindings.",
+          "properties": {
+            "preset":    { "type": "string", "enum": ["breathe", "pulse", "orbit", "drift", "tremble"] },
+            "intensity": { "type": "number" },
+            "feature":   { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] }
+          },
+          "required": ["preset"]
         }
       },
       "required": ["content", "position", "style"]
@@ -75,7 +90,7 @@
           "items": {
             "type": "object",
             "properties": {
-              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue", "blur", "saturation"] },
               "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
               "map": {
                 "type": "object",
@@ -90,6 +105,21 @@
             },
             "required": ["property", "feature", "map"]
           }
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["background", "midground", "foreground"],
+          "description": "Optional depth band. Omit for the per-type default (SVG defaults to foreground). See hijaz_base.md §Motion presets."
+        },
+        "motion": {
+          "type": "object",
+          "description": "Optional motion preset — breathe, pulse, orbit, drift, tremble. Composes with explicit reactivity. See hijaz_base.md §Motion presets for per-preset guidance.",
+          "properties": {
+            "preset":    { "type": "string", "enum": ["breathe", "pulse", "orbit", "drift", "tremble"] },
+            "intensity": { "type": "number" },
+            "feature":   { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] }
+          },
+          "required": ["preset"]
         }
       },
       "required": ["svg_markup", "position", "semantic_label"]
@@ -97,13 +127,13 @@
   },
   {
     "name": "addImage",
-    "description": "Request an image via search query. The query is the compositional act — what you choose to ask for is the artifact. Use sparingly, roughly once every minute or two of performance. Never immediately after the previous image has faded. Returns the new element_id.",
+    "description": "Place a photographic image via search query. Photographs are the figurative heart of the scene — stone, light, a hand on a wall, a lamp, a room, a textile — what the room sits with while the music unfolds. Reach for this tool often; a scene that loses its figurative photography for long passages feels hollow. Soft floor: use addImage in most cycles, and at minimum once every three cycles. Images now have a default time-to-live (~25 s) and dissolve out over ~8 s, so new images replace old ones without needing a manual fadeElement. The query you choose IS the compositional act. Returns the new element_id.",
     "input_schema": {
       "type": "object",
       "properties": {
         "query": {
           "type": "string",
-          "description": "The search query. Be deliberate — avoid generic terms like \"Arabic music\" or \"desert\". Reach for texture, place, quality: \"threshold light through a doorway\", \"stone wall in low sun\", \"salt flats at dusk\"."
+          "description": "The search query. Be deliberate — avoid generic terms like \"Arabic music\" or \"desert\". Reach for texture, place, quality: \"threshold light through a doorway\", \"stone wall in low sun\", \"salt flats at dusk\", \"oil lamp on a stone ledge\", \"worn cotton textile by a window\"."
         },
         "position": {
           "type": "string",
@@ -111,15 +141,15 @@
         },
         "lifetime_s": {
           "type": "number",
-          "description": "Optional. Omit this field and the image persists for the entire performance — this is almost always what you want, because images give the scene somewhere to sit. Supply an explicit value only for an image that is deliberately a flash — a single cycle glimpse the scene is meant to release."
+          "description": "Optional. Omit this field and the image fades naturally after ~25 s with an ~8 s dissolve — this is almost always what you want, because figurative turnover gives the scene its breathing quality. Pass lifetime_s: null (explicitly) to make ONE foundational image that anchors the whole performance. Pass a smaller number (e.g. 8) for a deliberate flash."
         },
         "reactivity": {
           "type": "array",
-          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. Images react well to slow features (hijaz_intensity driving color_hue drift; spectral_centroid driving slow rotation). Avoid binding fast features to images — photographic content reads as flickering under fast reactions.",
+          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. Images react well to slow features (hijaz_intensity driving color_hue drift or saturation; spectral_centroid driving slow rotation; hijaz_intensity driving a passing blur). Avoid binding fast features to images — photographic content reads as flickering under fast reactions.",
           "items": {
             "type": "object",
             "properties": {
-              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue", "blur", "saturation"] },
               "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
               "map": {
                 "type": "object",
@@ -134,6 +164,21 @@
             },
             "required": ["property", "feature", "map"]
           }
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["background", "midground", "foreground"],
+          "description": "Optional depth band. Omit for the image-type default (midground). Reach for background only when you want the image deliberately behind other content."
+        },
+        "motion": {
+          "type": "object",
+          "description": "Optional motion preset. A `breathe` preset on a photographic anchor (a lamp, a textile, a figure) is a characteristic Session I move — the image inhales with the music's energy. See hijaz_base.md §Motion presets.",
+          "properties": {
+            "preset":    { "type": "string", "enum": ["breathe", "pulse", "orbit", "drift", "tremble"] },
+            "intensity": { "type": "number" },
+            "feature":   { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] }
+          },
+          "required": ["preset"]
         }
       },
       "required": ["query", "position"]
@@ -214,7 +259,7 @@
                 "items": {
                   "type": "object",
                   "properties": {
-                    "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+                    "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue", "blur", "saturation"] },
                     "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
                     "map": {
                       "type": "object",
@@ -229,6 +274,21 @@
                   },
                   "required": ["property", "feature", "map"]
                 }
+              },
+              "layer": {
+                "type": "string",
+                "enum": ["background", "midground", "foreground"],
+                "description": "Optional depth band for this member. Mix layers freely inside a composite — a background image with a foreground text fragment is the canonical shape."
+              },
+              "motion": {
+                "type": "object",
+                "description": "Optional motion preset for this member. See hijaz_base.md §Motion presets.",
+                "properties": {
+                  "preset":    { "type": "string", "enum": ["breathe", "pulse", "orbit", "drift", "tremble"] },
+                  "intensity": { "type": "number" },
+                  "feature":   { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] }
+                },
+                "required": ["preset"]
               }
             },
             "required": ["type", "position"]
@@ -291,6 +351,11 @@
         "lifetime_s": {
           "type": "number",
           "description": "Optional lifetime in seconds. Omit for default permanence; supply a number for transient gestures that should retire automatically."
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["background", "midground", "foreground"],
+          "description": "Optional depth band for this localized sketch. Default is background (the sketch sits behind DOM elements). Pass midground or foreground only when the sketch should appear over images/text."
         }
       },
       "required": ["position", "size", "code", "audio_reactive"]
