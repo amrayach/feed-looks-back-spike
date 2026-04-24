@@ -25,6 +25,43 @@ export const ReactivitySchema = z.object({
   smoothing_ms: z.number().finite().nonnegative().optional(),
 }).strict();
 
+// Recompose-tool shared primitives. Named here so the patch union below
+// and tool_handlers can import the same validation surface. Kept strict
+// so LLM-authored calls that forget a unit (e.g. "duration_ms: Infinity")
+// reject rather than silently animate forever.
+export const TransformSpecSchema = z.object({
+  rotate: z.number().finite().optional(),
+  scale: z.number().finite().positive().optional(),
+  translate: z.object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+  }).strict().optional(),
+}).strict().refine(
+  (t) => t.rotate !== undefined || t.scale !== undefined || t.translate !== undefined,
+  { message: "transform must specify at least one of rotate, scale, translate" },
+);
+
+export const PaletteTargetSchema = z.object({
+  hue: z.number().finite().optional(),
+  saturation: z.number().finite().nonnegative().optional(),
+  lightness: z.number().finite().nonnegative().optional(),
+}).strict().refine(
+  (p) => p.hue !== undefined || p.saturation !== undefined || p.lightness !== undefined,
+  { message: "palette target must specify at least one of hue, saturation, lightness" },
+);
+
+export const MorphTargetSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("svg"), content_or_src: z.string().min(1) }),
+  z.object({ type: z.literal("image"), content_or_src: z.string().min(1) }),
+]);
+
+export const TEXT_ANIMATE_EFFECTS = Object.freeze([
+  "typewriter",
+  "wordByWord",
+  "marquee",
+  "shake",
+]);
+
 const HIJAZ_STATES = ["quiet", "approach", "arrived", "tahwil", "aug2"];
 
 const FEATURE_VALUE_SCHEMAS = {
@@ -128,6 +165,39 @@ export const PatchSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("prompt.replace"), version: z.string() }),
   z.object({ type: z.literal("replay.begin"), run_id: z.string() }),
   z.object({ type: z.literal("replay.end"), run_id: z.string() }),
+  // Recompose patches (expanded-tools). Ephemeral DOM animations /
+  // asset swaps on elements that already exist. They do not replay
+  // (reconnecting mid-run lands on the post-animation steady state),
+  // so patch_cache treats them as no-ops.
+  z.object({
+    type: z.literal("element.transform"),
+    element_id: z.string(),
+    transform: TransformSpecSchema,
+    duration_ms: z.number().finite().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("element.morph"),
+    element_id: z.string(),
+    to: MorphTargetSchema,
+    duration_ms: z.number().finite().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("scene.pulse"),
+    intensity: z.number().finite().min(0).max(1),
+    color: z.string().nullable().optional(),
+    duration_ms: z.number().finite().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("scene.palette_shift"),
+    target: PaletteTargetSchema,
+    duration_ms: z.number().finite().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("text.animate"),
+    element_id: z.string(),
+    effect: z.enum(TEXT_ANIMATE_EFFECTS),
+    duration_ms: z.number().finite().nonnegative(),
+  }),
 ]);
 
 const WsMessageUnion = z.discriminatedUnion("channel", [
@@ -328,6 +398,126 @@ if (isDirectNodeExecution) {
     );
     assert.throws(() =>
       WsMessageSchema.parse({ channel: "feature", feature: "unknown", value: 0 }),
+    );
+  });
+
+  // ─── Recompose patch types (expanded-tools) ───────────────────────
+  t("PatchSchema accepts element.transform with rotate+scale+translate", () => {
+    const parsed = PatchSchema.parse({
+      type: "element.transform",
+      element_id: "elem_0001",
+      transform: { rotate: 15, scale: 1.2, translate: { x: 40, y: -10 } },
+      duration_ms: 600,
+    });
+    assert.equal(parsed.transform.rotate, 15);
+    assert.equal(parsed.transform.translate.x, 40);
+  });
+
+  t("PatchSchema rejects element.transform with empty transform object", () => {
+    assert.throws(() =>
+      PatchSchema.parse({
+        type: "element.transform",
+        element_id: "elem_0001",
+        transform: {},
+        duration_ms: 300,
+      }),
+    );
+  });
+
+  t("PatchSchema rejects element.transform with negative duration or non-finite scale", () => {
+    assert.throws(() =>
+      PatchSchema.parse({
+        type: "element.transform",
+        element_id: "elem_0001",
+        transform: { rotate: 15 },
+        duration_ms: -1,
+      }),
+    );
+    assert.throws(() =>
+      PatchSchema.parse({
+        type: "element.transform",
+        element_id: "elem_0001",
+        transform: { scale: Number.POSITIVE_INFINITY },
+        duration_ms: 300,
+      }),
+    );
+  });
+
+  t("PatchSchema accepts element.morph with svg target and image target", () => {
+    const svgParsed = PatchSchema.parse({
+      type: "element.morph",
+      element_id: "elem_0002",
+      to: { type: "svg", content_or_src: "<svg viewBox='0 0 10 10'><circle cx='5' cy='5' r='4'/></svg>" },
+      duration_ms: 800,
+    });
+    assert.equal(svgParsed.to.type, "svg");
+    const imgParsed = PatchSchema.parse({
+      type: "element.morph",
+      element_id: "elem_0002",
+      to: { type: "image", content_or_src: "minaret at dusk" },
+      duration_ms: 800,
+    });
+    assert.equal(imgParsed.to.type, "image");
+  });
+
+  t("PatchSchema rejects element.morph with unknown to.type", () => {
+    assert.throws(() =>
+      PatchSchema.parse({
+        type: "element.morph",
+        element_id: "elem_0002",
+        to: { type: "video", content_or_src: "x" },
+        duration_ms: 100,
+      }),
+    );
+  });
+
+  t("PatchSchema accepts scene.pulse with color and clamps intensity to [0,1]", () => {
+    const parsed = PatchSchema.parse({
+      type: "scene.pulse",
+      intensity: 0.7,
+      color: "#d59c6a",
+      duration_ms: 400,
+    });
+    assert.equal(parsed.intensity, 0.7);
+    assert.equal(parsed.color, "#d59c6a");
+    assert.throws(() =>
+      PatchSchema.parse({ type: "scene.pulse", intensity: 1.7, duration_ms: 400 }),
+    );
+  });
+
+  t("PatchSchema accepts scene.palette_shift and rejects empty target", () => {
+    const parsed = PatchSchema.parse({
+      type: "scene.palette_shift",
+      target: { hue: 20, saturation: 0.8 },
+      duration_ms: 1200,
+    });
+    assert.equal(parsed.target.hue, 20);
+    assert.throws(() =>
+      PatchSchema.parse({
+        type: "scene.palette_shift",
+        target: {},
+        duration_ms: 1200,
+      }),
+    );
+  });
+
+  t("PatchSchema accepts text.animate for each allowed effect and rejects unknown ones", () => {
+    for (const effect of ["typewriter", "wordByWord", "marquee", "shake"]) {
+      const parsed = PatchSchema.parse({
+        type: "text.animate",
+        element_id: "elem_0003",
+        effect,
+        duration_ms: 500,
+      });
+      assert.equal(parsed.effect, effect);
+    }
+    assert.throws(() =>
+      PatchSchema.parse({
+        type: "text.animate",
+        element_id: "elem_0003",
+        effect: "rotate",
+        duration_ms: 500,
+      }),
     );
   });
 

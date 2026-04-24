@@ -453,6 +453,24 @@ Use this tool 2-4 times across a performance. Do not overuse it — a scene of o
 
 ---
 
+## Recomposing what is already there
+
+Five tools let you change elements that are already on the scene rather than adding new ones. They are:
+
+- `transformElement` — animate the CSS transform of an existing element (rotate, scale, translate). Use to shift a calligraphic stroke into a new angle as the phrase resolves; to scale a lantern up at the moment of arrival; to translate a small figure toward the edge as the music recedes.
+- `morphElement` — cross-fade an existing element from its current asset to a new one. The element_id stays; what it depicts changes. Use when one figurative form should become another mid-phrase: a doorway becoming a threshold of light, a single line of calligraphy becoming a small lantern at the resolve. Not for text — use `textAnimate` instead.
+- `pulseScene` — flash the whole stage with a fading color overlay. Use for climactic moments, the instant of a tahwil arrival, the final breath before a return to the tonic. A single pulse per phrase reads strong; several in a row deaden the scene.
+- `paletteShift` — globally shift the color temperature of the whole stage via a CSS filter. Use when the music moves into a different tonal world: warm lantern-amber settling into cool threshold-dusk as the upper jins opens. Re-colors everything already on screen; nothing is removed and nothing re-placed.
+- `textAnimate` — animate an already-placed text fragment with one of: `typewriter` (character-by-character reveal), `wordByWord` (staggered word fade-in), `marquee` (slow horizontal slide), `shake` (trembling displacement). Use for gradual reveal, rhythmic emphasis, or anxious instability — not decoration.
+
+These five share a discipline: **they do not increase scene density**. When the scene is already full and the music asks for a response, recomposing what is there is often more truthful than adding more. A composer who only ever places new elements ends up with a scene that drifts away from any single decision; a composer who can also rotate, morph, pulse, shift, and animate has a second register of response. Use these tools when a placement decision would feel like noise.
+
+Two pairing notes:
+- An element that already carries `reactivity` should not also receive `transformElement` calls — both write to the same CSS transform property and the result is undefined. Pick one register of motion per element.
+- `morphElement` mutates the element's stored content, so subsequent scene state summaries will reflect the morphed form. Other recompose tools are purely visual — they animate without changing what scene state says is there.
+
+---
+
 ## Reactivity — the scene breathes with the music (v6.0)
 
 Every placement tool (`addText`, `addSVG`, `addImage`, and each member of `addCompositeScene`) accepts an optional `reactivity` array. Each entry in the array binds ONE audio feature to ONE DOM property, with a configurable input→output mapping, an easing curve, and a smoothing duration:
