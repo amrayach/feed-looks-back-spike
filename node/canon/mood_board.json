@@ -1,0 +1,27 @@
+[
+  {
+    "path": "./placeholders/positive_01.svg",
+    "role": "positive",
+    "label": "figurative miniature painting — human figure with ornamental border; line weight, palette, rootedness in human form"
+  },
+  {
+    "path": "./placeholders/positive_02.svg",
+    "role": "positive",
+    "label": "architectural interior photography — arched doorway with light wash; threshold as dramatic subject"
+  },
+  {
+    "path": "./placeholders/positive_03.svg",
+    "role": "positive",
+    "label": "calligraphic specimen — letterform as image; the stroke itself as the subject"
+  },
+  {
+    "path": "./placeholders/anchor_01.svg",
+    "role": "anchor",
+    "label": "mihrab niche silhouette — tradition anchor; the shape that says 'this tradition, this place'"
+  },
+  {
+    "path": "./placeholders/negative_01.svg",
+    "role": "negative",
+    "label": "NOT this — generic AI generative-art aesthetic (abstract flow fields, pure particle composition, no recognisable subject)"
+  }
+]
