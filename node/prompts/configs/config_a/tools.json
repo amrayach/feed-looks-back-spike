@@ -20,6 +20,28 @@
         "lifetime_s": {
           "type": "number",
           "description": "Optional. Omit this field and the text persists for the entire performance — this is almost always what you want, because testimony accumulates. Supply an explicit number ONLY for deliberately ephemeral text (a passing interjection the scene should not keep). There is no implicit timeout; silence at this field means permanence."
+        },
+        "reactivity": {
+          "type": "array",
+          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. Each entry binds one DOM property to one audio feature with a configurable map + easing. Favor a handful of load-bearing reactive elements over a scene where everything moves.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+              "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
+              "map": {
+                "type": "object",
+                "properties": {
+                  "in":    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                  "out":   { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                  "curve": { "type": "string", "enum": ["linear", "ease-in", "ease-out", "impulse"] }
+                },
+                "required": ["in", "out", "curve"]
+              },
+              "smoothing_ms": { "type": "number" }
+            },
+            "required": ["property", "feature", "map"]
+          }
         }
       },
       "required": ["content", "position", "style"]
@@ -46,6 +68,28 @@
         "semantic_label": {
           "type": "string",
           "description": "Short human-readable phrase (3–6 words) describing what the SVG is compositionally. Required for scene-state memory across cycles. Examples: \"thin vertical line left\", \"angular break lower-right\", \"slow horizontal band\"."
+        },
+        "reactivity": {
+          "type": "array",
+          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. SVG forms respond well to tahwil impulses (scale ring-outs) and hijaz_state gating. A sustained vertical line that pulses its scale on each tahwil is a signature Session I move.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+              "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
+              "map": {
+                "type": "object",
+                "properties": {
+                  "in":    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                  "out":   { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                  "curve": { "type": "string", "enum": ["linear", "ease-in", "ease-out", "impulse"] }
+                },
+                "required": ["in", "out", "curve"]
+              },
+              "smoothing_ms": { "type": "number" }
+            },
+            "required": ["property", "feature", "map"]
+          }
         }
       },
       "required": ["svg_markup", "position", "semantic_label"]
@@ -68,6 +112,28 @@
         "lifetime_s": {
           "type": "number",
           "description": "Optional. Omit this field and the image persists for the entire performance — this is almost always what you want, because images give the scene somewhere to sit. Supply an explicit value only for an image that is deliberately a flash — a single cycle glimpse the scene is meant to release."
+        },
+        "reactivity": {
+          "type": "array",
+          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. Images react well to slow features (hijaz_intensity driving color_hue drift; spectral_centroid driving slow rotation). Avoid binding fast features to images — photographic content reads as flickering under fast reactions.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+              "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
+              "map": {
+                "type": "object",
+                "properties": {
+                  "in":    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                  "out":   { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                  "curve": { "type": "string", "enum": ["linear", "ease-in", "ease-out", "impulse"] }
+                },
+                "required": ["in", "out", "curve"]
+              },
+              "smoothing_ms": { "type": "number" }
+            },
+            "required": ["property", "feature", "map"]
+          }
         }
       },
       "required": ["query", "position"]
@@ -141,6 +207,28 @@
               "style": {
                 "type": "string",
                 "description": "For type='text': free-form style hints. Optional."
+              },
+              "reactivity": {
+                "type": "array",
+                "description": "Optional audio-reactive bindings for this member. See hijaz_base.md §Reactivity. Each member's reactivity is independent — a composite can mix reactive and non-reactive members.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "property": { "type": "string", "enum": ["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"] },
+                    "feature":  { "type": "string", "enum": ["amplitude", "onset_strength", "spectral_centroid", "hijaz_state", "hijaz_intensity", "hijaz_tahwil"] },
+                    "map": {
+                      "type": "object",
+                      "properties": {
+                        "in":    { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                        "out":   { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                        "curve": { "type": "string", "enum": ["linear", "ease-in", "ease-out", "impulse"] }
+                      },
+                      "required": ["in", "out", "curve"]
+                    },
+                    "smoothing_ms": { "type": "number" }
+                  },
+                  "required": ["property", "feature", "map"]
+                }
               }
             },
             "required": ["type", "position"]
