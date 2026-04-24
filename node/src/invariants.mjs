@@ -157,11 +157,16 @@ if (isDirectNodeExecution) {
   // access patterns catches the class of bug where a helpful-looking
   // "window.parent.postMessage(myself); window.parent.document…" line
   // slips in during a refactor.
+  //
+  // Post Tier 6 R1 (MessageChannel transport): parent↔iframe traffic
+  // flows over a transferred MessagePort, not window.parent.postMessage.
+  // The positive assertion now verifies port-based signaling.
   await t("invariant 10: p5_bridge.js contains no forbidden parent-DOM access patterns", () => {
     const bridgeSrc = read(join(NODE_ROOT, "browser", "p5_bridge.js"));
     // These are the forms that would either throw at runtime (SOP
     // violation) or indicate an author forgot which side of the
-    // boundary they're on. postMessage is explicitly allowed.
+    // boundary they're on. Port-based postMessage (parentPort) is the
+    // sanctioned transport, wildcard-target window.postMessage is not.
     const forbidden = [
       /window\.parent\.document/,
       /window\.parent\.cookie/,
@@ -169,14 +174,25 @@ if (isDirectNodeExecution) {
       /window\.parent\.sessionStorage/,
       /window\.parent\.location\s*=/,
       /window\.parent\.__\w+/,
+      // R1: no wildcard-target window.parent.postMessage. The ONE
+      // intentional wildcard in the sandbox flow is the host's
+      // port-handoff post in p5_sandbox.mjs, not the bridge's.
+      /window\.parent\.postMessage\s*\([^)]*["']\*["']/,
     ];
     for (const pat of forbidden) {
       assert.ok(!pat.test(bridgeSrc), `p5_bridge.js contains forbidden parent access: ${pat}`);
     }
-    // Positive: bridge MUST use postMessage to reach the parent.
+    // Positive: bridge MUST use port-based messaging (parentPort) to
+    // reach the host. If this regresses, the MessageChannel transport
+    // is no longer the signaling path.
     assert.ok(
-      /window\.parent\.postMessage\s*\(/.test(bridgeSrc),
-      "p5_bridge.js does not call window.parent.postMessage — how is it signaling the host?",
+      /parentPort\.postMessage\s*\(/.test(bridgeSrc),
+      "p5_bridge.js does not call parentPort.postMessage — MessageChannel transport is broken",
+    );
+    // Positive: handshake must be single-shot (listener detaches).
+    assert.ok(
+      /removeEventListener\s*\(\s*["']message["']/.test(bridgeSrc),
+      "p5_bridge.js does not detach the handshake listener — single-shot invariant regressed",
     );
   });
 
