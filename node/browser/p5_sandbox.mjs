@@ -109,6 +109,7 @@ export function createP5Sandbox({
   warmupGraceMs = INITIAL_WARMUP_GRACE_MS,
   onRetire = () => {},
   onSketchError = () => {},
+  expectedOrigin = documentLike?.defaultView?.location?.origin ?? null,
 } = {}) {
   if (!mount) throw new Error("mount is required");
 
@@ -191,22 +192,34 @@ export function createP5Sandbox({
   function installMessageListener() {
     if (messageListener) return;
     messageListener = (e) => {
-      const parsed = SandboxMessageSchema.safeParse(e?.data);
-      if (!parsed.success) return; // drop silently
-      // Find the sketch whose iframe contentWindow matches e.source.
+      // Origin gate: sandbox="allow-scripts" WITHOUT allow-same-origin
+      // gives the iframe an opaque document origin, so event.origin is
+      // the string "null" on the parent side. If a same-origin frame
+      // somehow posts (e.g., future allow-same-origin flag flip), accept
+      // only the expected parent origin. Everything else is a foreign
+      // origin — drop before Zod parsing to keep costs proportional.
+      if (e?.origin !== "null" && e?.origin !== expectedOrigin) return;
+      // Source gate: only accept messages whose source is a currently
+      // tracked iframe's contentWindow. Foreign windows cannot forge
+      // event.source because the browser sets it to the real sender.
+      let sourceEntry = null;
       for (const entry of entries.values()) {
         if (entry.iframe.contentWindow === e.source) {
-          if (parsed.data.type === "heartbeat") {
-            entry.lastHeartbeat = now();
-          } else if (parsed.data.type === "ready") {
-            entry.ready = true;
-            entry.lastHeartbeat = now();
-          } else if (parsed.data.type === "error") {
-            entry.lastHeartbeat = now(); // errors count as alive
-            onSketchError({ sketch_id: entry.sketch_id, message: parsed.data.message });
-          }
-          return;
+          sourceEntry = entry;
+          break;
         }
+      }
+      if (!sourceEntry) return;
+      const parsed = SandboxMessageSchema.safeParse(e?.data);
+      if (!parsed.success) return; // drop silently
+      if (parsed.data.type === "heartbeat") {
+        sourceEntry.lastHeartbeat = now();
+      } else if (parsed.data.type === "ready") {
+        sourceEntry.ready = true;
+        sourceEntry.lastHeartbeat = now();
+      } else if (parsed.data.type === "error") {
+        sourceEntry.lastHeartbeat = now(); // errors count as alive
+        onSketchError({ sketch_id: sourceEntry.sketch_id, message: parsed.data.message });
       }
     };
     (documentLike.defaultView ?? globalThis).addEventListener("message", messageListener);
@@ -374,8 +387,9 @@ if (isDirectNodeExecution) {
   }
 
   class FakeWindow {
-    constructor() {
+    constructor({ origin = "http://host.test:9000" } = {}) {
       this._listeners = new Map();
+      this.location = { origin, href: `${origin}/stage.html` };
     }
     addEventListener(type, fn) {
       const list = this._listeners.get(type) ?? [];
@@ -386,8 +400,13 @@ if (isDirectNodeExecution) {
       const list = this._listeners.get(type) ?? [];
       this._listeners.set(type, list.filter((x) => x !== fn));
     }
-    dispatchMessage(source, data) {
-      for (const fn of this._listeners.get("message") ?? []) fn({ source, data });
+    // Default origin "null" simulates the real behavior of a sandboxed
+    // iframe WITHOUT allow-same-origin: its document origin is opaque
+    // and event.origin shows up as the literal string "null" on the
+    // parent side. Tests that want to simulate a foreign origin pass
+    // one explicitly.
+    dispatchMessage(source, data, origin = "null") {
+      for (const fn of this._listeners.get("message") ?? []) fn({ source, data, origin });
     }
   }
 
@@ -604,6 +623,128 @@ if (isDirectNodeExecution) {
     assert.equal(sandbox._entries.size, 1);
     assert.equal(mount.children.length, 1);
     assert.match(mount.children[0].src, /^\/p5\/sandbox\?sketch_id=r1&slot=localized$/);
+  });
+
+  await t("foreign origin is dropped without updating heartbeat (Fix 1 gate)", () => {
+    let clock = 100;
+    const { sandbox, documentLike, mount } = makeSandbox({ now: () => clock });
+    sandbox.mountLocalized({ sketch_id: "o1", position: "center", size: "small" });
+    const iframe = mount.children[0];
+    const entry = sandbox._entries.get("o1");
+    const before = entry.lastHeartbeat;
+    clock = 9999;
+    // Well-formed heartbeat, but delivered with a foreign origin:
+    // should be dropped before the Zod parse even runs.
+    documentLike.defaultView.dispatchMessage(
+      iframe.contentWindow,
+      { type: "heartbeat", frame_count: 1, last_frame_time_ms: 16.7 },
+      "https://evil.example.com",
+    );
+    assert.equal(entry.lastHeartbeat, before);
+    assert.equal(entry.ready, false);
+  });
+
+  await t("non-iframe source (origin='null') is dropped without matching any entry", () => {
+    let clock = 100;
+    const { sandbox, documentLike } = makeSandbox({ now: () => clock });
+    sandbox.mountLocalized({ sketch_id: "s1", position: "center", size: "small" });
+    const entry = sandbox._entries.get("s1");
+    const before = entry.lastHeartbeat;
+    clock = 9999;
+    // A well-formed heartbeat with the correct opaque origin but a
+    // source that isn't any tracked iframe's contentWindow — forged
+    // event.source is not actually forgeable in a real browser, but
+    // we still defend against a stale/leaked window reference.
+    const strangerWindow = { postMessage: () => {} };
+    documentLike.defaultView.dispatchMessage(
+      strangerWindow,
+      { type: "heartbeat", frame_count: 1, last_frame_time_ms: 16.7 },
+      "null",
+    );
+    assert.equal(entry.lastHeartbeat, before);
+    assert.equal(entry.ready, false);
+  });
+
+  await t("expected parent origin (non-null) is accepted when iframe somehow has a named origin", () => {
+    let clock = 100;
+    const { sandbox, documentLike, mount } = makeSandbox({ now: () => clock });
+    sandbox.mountLocalized({ sketch_id: "p1", position: "center", size: "small" });
+    const iframe = mount.children[0];
+    const entry = sandbox._entries.get("p1");
+    clock = 500;
+    // Fallback path: if a future flag flip grants the iframe a named
+    // origin (e.g., allow-same-origin added), origin will equal the
+    // parent's origin. The gate accepts that case too.
+    documentLike.defaultView.dispatchMessage(
+      iframe.contentWindow,
+      { type: "heartbeat", frame_count: 1, last_frame_time_ms: 16.7 },
+      "http://host.test:9000",
+    );
+    assert.equal(entry.lastHeartbeat, 500);
+  });
+
+  await t("bridge rejects foreign-origin inbound messages (p5_bridge.js harness)", async () => {
+    // Execute the bridge in a VM context with stubbed globals, post a
+    // foreign-origin message, assert window.features stays unchanged.
+    const vm = await import("node:vm");
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const path = await import("node:path");
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const bridgeSrc = readFileSync(path.join(here, "p5_bridge.js"), "utf8");
+
+    const postedToParent = [];
+    const listeners = [];
+    const sandboxCtx = {
+      __flb_listeners: listeners,
+      __flb_postedToParent: postedToParent,
+    };
+    sandboxCtx.window = {
+      addEventListener(type, fn) { if (type === "message") listeners.push(fn); },
+      removeEventListener() {},
+      parent: { postMessage: (msg /* , targetOrigin */) => postedToParent.push(msg) },
+      location: { href: "http://host.test:9000/p5/sandbox?sketch_id=b1&slot=localized" },
+      features: undefined,
+      __flb_frame_count: 0,
+      __flb_last_frame_time_ms: 0,
+    };
+    sandboxCtx.document = {
+      getElementById: () => ({ textContent: JSON.stringify("/* no-op sketch */") }),
+    };
+    sandboxCtx.setInterval = () => 0;
+    sandboxCtx.URL = URL;
+    sandboxCtx.JSON = JSON;
+
+    vm.createContext(sandboxCtx);
+    vm.runInContext(bridgeSrc, sandboxCtx);
+
+    // Bridge should have installed a message listener AND posted 'ready'.
+    assert.equal(listeners.length, 1);
+    assert.ok(postedToParent.some((m) => m.type === "ready"), "bridge did not post ready");
+
+    // Parent posts a features frame from the expected origin — should mirror.
+    listeners[0]({
+      source: sandboxCtx.window.parent,
+      origin: "http://host.test:9000",
+      data: { type: "features", values: { amplitude: 0.42 } },
+    });
+    assert.equal(sandboxCtx.window.features.amplitude, 0.42);
+
+    // A foreign origin posts a features frame — bridge must drop it.
+    listeners[0]({
+      source: sandboxCtx.window.parent,
+      origin: "https://evil.example.com",
+      data: { type: "features", values: { amplitude: 9.99 } },
+    });
+    assert.equal(sandboxCtx.window.features.amplitude, 0.42, "bridge accepted foreign-origin message");
+
+    // A non-parent source with the right origin — bridge must drop it too.
+    listeners[0]({
+      source: { /* some other window */ },
+      origin: "http://host.test:9000",
+      data: { type: "features", values: { amplitude: 7.77 } },
+    });
+    assert.equal(sandboxCtx.window.features.amplitude, 0.42, "bridge accepted non-parent source");
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
