@@ -732,6 +732,12 @@ async function run(options) {
   const operatorUrl = stageAudio
     ? appendQueryParam(baseOperatorUrl, "audio", "1")
     : baseOperatorUrl;
+  const baseShowUrl = typeof stageServer.getShowUrl === "function"
+    ? stageServer.getShowUrl({ runId, mode: stageMode })
+    : appendQueryParam(baseOperatorUrl.replace("/?", "/show?"), "mode", stageMode);
+  const showUrl = stageAudio
+    ? appendQueryParam(baseShowUrl, "audio", "1")
+    : baseShowUrl;
 
   const resolvedProducer = featureProducer ?? (stageMode === "live" && mode === "real" ? "python" : "none");
   const wsUrl = `ws://${stageServer.host}:${stageServer.port}/ws`;
@@ -779,6 +785,7 @@ async function run(options) {
     );
     process.stdout.write(`output: ${runDir}\n`);
     process.stdout.write(`stage: ${operatorUrl}\n`);
+    process.stdout.write(`show: ${showUrl}\n`);
 
     const state = createInitialState();
 
@@ -787,6 +794,8 @@ async function run(options) {
       config: configName,
       model,
       mode,
+      stage_url: operatorUrl,
+      show_url: showUrl,
       stage_audio: stageAudio
         ? {
             enabled: true,
@@ -1047,6 +1056,7 @@ async function run(options) {
         (mode === "real" ? `Cost total: $${summary.totals.cost.toFixed(4)}\n` : "") +
         `Run dir: ${runDir}\n` +
         `Stage: ${operatorUrl}\n` +
+        `Show: ${showUrl}\n` +
         (liveHtmlPath ? `Live monitor: ${liveHtmlPath}\n` : "") +
         (summaryWriteErr ? `Run summary write failed: ${summaryWriteErr.message}\n` : "") +
         (finalHtmlPath ? `Final HTML: ${finalHtmlPath}\n` : ""),
@@ -1060,6 +1070,7 @@ async function run(options) {
       finalHtmlPath,
       summaryWriteError: summaryWriteErr,
       operatorUrl,
+      showUrl,
       interrupted: interruptState.requested,
     };
   } finally {
@@ -1204,6 +1215,9 @@ async function runSelfTests() {
       },
       getOperatorUrl({ runId, mode }) {
         return `http://127.0.0.1:9999/?run_id=${runId}&mode=${mode}`;
+      },
+      getShowUrl({ runId, mode }) {
+        return `http://127.0.0.1:9999/show?run_id=${runId}&mode=${mode}`;
       },
       async close() {},
     };
@@ -1397,7 +1411,7 @@ async function runSelfTests() {
     const captured = [];
     writeTestCorpus(corpusDir, 2);
 
-    const { operatorUrl, runDir } = await run({
+    const { operatorUrl, showUrl, runDir } = await run({
       corpusDir,
       configName: "config_a",
       cyclesRange: null,
@@ -1418,6 +1432,7 @@ async function runSelfTests() {
     assert.equal(captured[4].type, "element.add");
     assert.equal(captured[5].type, "cycle.end");
     assert.match(operatorUrl, /\?run_id=.*&mode=live$/);
+    assert.match(showUrl, /\/show\?run_id=.*&mode=live$/);
     assert.equal(existsSync(join(runDir, "final_scene.html")), true);
   });
 
@@ -1429,7 +1444,7 @@ async function runSelfTests() {
     writeTestCorpus(corpusDir, 1);
     writeFileSync(stageAudioPath, "fake wav bytes");
 
-    const { operatorUrl, runDir, summary } = await run({
+    const { operatorUrl, showUrl, runDir, summary } = await run({
       corpusDir,
       configName: "config_a",
       cyclesRange: null,
@@ -1446,7 +1461,10 @@ async function runSelfTests() {
 
     assert.equal(readFileSync(join(runDir, "audio.wav"), "utf8"), "fake wav bytes");
     assert.match(operatorUrl, /\?run_id=.*&mode=live&audio=1$/);
+    assert.match(showUrl, /\/show\?run_id=.*&mode=live&audio=1$/);
     assert.equal(summary.stage_audio.enabled, true);
+    assert.equal(summary.stage_url, operatorUrl);
+    assert.equal(summary.show_url, showUrl);
     assert.equal(summary.stage_audio.source_path, stageAudioPath);
     assert.equal(summary.stage_audio.run_path, join(runDir, "audio.wav"));
   });

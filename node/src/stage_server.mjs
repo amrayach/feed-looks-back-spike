@@ -104,6 +104,10 @@ function makeOperatorUrl({ host, port, runId, mode }) {
   return `http://${host}:${port}/?run_id=${encodeURIComponent(runId)}&mode=${encodeURIComponent(mode)}`;
 }
 
+function makeShowUrl({ host, port, runId, mode }) {
+  return `http://${host}:${port}/show?run_id=${encodeURIComponent(runId)}&mode=${encodeURIComponent(mode)}`;
+}
+
 export async function createStageServer({
   host = "127.0.0.1",
   port = 0,
@@ -162,6 +166,10 @@ export async function createStageServer({
 
       if (url.pathname === "/") {
         filePath = join(browserRoot, "stage.html");
+      } else if (url.pathname === "/show") {
+        // Audience display: same-origin composition of the live stage and
+        // command HUD. The iframes preserve each runtime's existing WS path.
+        filePath = join(browserRoot, "show.html");
       } else if (url.pathname === "/hud") {
         // Code-stream HUD. Loads the feed UI; the page itself reads
         // ?run_id=...&mode=posthoc|live and pulls data either from
@@ -342,6 +350,10 @@ export async function createStageServer({
       return makeOperatorUrl({ host, port: boundPort, runId, mode });
     },
 
+    getShowUrl({ runId, mode }) {
+      return makeShowUrl({ host, port: boundPort, runId, mode });
+    },
+
     async setCurrentRunContext({ runId, mode, runDir }) {
       currentContext = { runId, mode, runDir };
       patchCache = createPatchCache({ persistPath: join(runDir, "patch_cache.json") });
@@ -472,6 +484,7 @@ if (isDirectNodeExecution) {
   function freshNodeRoot(prefix) {
     const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
     write(join(root, "browser", "stage.html"), "<!doctype html><html><body>stage</body></html>");
+    write(join(root, "browser", "show.html"), "<!doctype html><html><body>show FLB_SHOW_MARKER</body></html>");
     write(join(root, "browser", "hud.html"), "<!doctype html><html><body>hud FLB_HUD_MARKER</body></html>");
     write(join(root, "browser", "hud.css"), "/* FLB_HUD_CSS_MARKER */\n");
     write(join(root, "browser", "hud.mjs"), "// FLB_HUD_JS_MARKER\n");
@@ -494,6 +507,7 @@ if (isDirectNodeExecution) {
     const server = await createStageServer({ nodeRoot });
     try {
       const stage = await requestText(`http://${server.host}:${server.port}/`);
+      const show = await requestText(`http://${server.host}:${server.port}/show`);
       const shared = await requestText(`http://${server.host}:${server.port}/shared/patch_protocol.mjs`);
       const layout = await requestText(`http://${server.host}:${server.port}/shared/scene_layout.mjs`);
       const easing = await requestText(`http://${server.host}:${server.port}/shared/binding_easing.mjs`);
@@ -502,6 +516,8 @@ if (isDirectNodeExecution) {
       const forbidden = await requestText(`http://${server.host}:${server.port}/shared/not_allowed.mjs`);
       assert.equal(stage.status, 200);
       assert.match(stage.body, /stage/);
+      assert.equal(show.status, 200);
+      assert.match(show.body, /FLB_SHOW_MARKER/);
       assert.equal(shared.status, 200);
       assert.equal(layout.status, 200);
       assert.equal(easing.status, 200);

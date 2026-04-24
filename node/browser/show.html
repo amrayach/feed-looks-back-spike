@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Feed Looks Back — Show</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --show-bg: #050505;
+        --show-rule: rgba(231, 199, 138, 0.16);
+        --show-text: rgba(245, 235, 215, 0.82);
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--show-bg);
+        color: var(--show-text);
+        overflow: hidden;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      }
+
+      .show-root {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) clamp(320px, 28vw, 520px);
+        width: 100vw;
+        height: 100vh;
+        background: #050505;
+      }
+
+      .show-stage,
+      .show-hud {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+      }
+
+      .show-stage {
+        background: #070709;
+      }
+
+      .show-hud {
+        border-left: 1px solid var(--show-rule);
+        background: #0b0a08;
+      }
+
+      iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: transparent;
+      }
+
+      .show-error {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        color: #f4d9bf;
+        background: #120f0d;
+      }
+
+      @media (max-width: 980px) {
+        .show-root {
+          grid-template-columns: 1fr;
+          grid-template-rows: minmax(0, 1fr) minmax(220px, 32vh);
+        }
+
+        .show-hud {
+          border-left: 0;
+          border-top: 1px solid var(--show-rule);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="show-root" class="show-root">
+      <section class="show-stage" aria-label="Live stage">
+        <iframe id="show-stage-frame" title="Feed Looks Back stage" allow="autoplay; fullscreen"></iframe>
+      </section>
+      <aside class="show-hud" aria-label="Live Opus command stream">
+        <iframe id="show-hud-frame" title="Opus command HUD"></iframe>
+      </aside>
+    </main>
+    <script type="module">
+      const params = new URLSearchParams(window.location.search);
+      const runId = params.get("run_id");
+      const mode = params.get("mode");
+
+      function showError(message) {
+        document.body.innerHTML = "";
+        const div = document.createElement("div");
+        div.className = "show-error";
+        div.textContent = `Show bootstrap error: ${message}`;
+        document.body.appendChild(div);
+      }
+
+      if (!runId) {
+        showError("missing required query parameter: run_id");
+      } else if (mode !== "live" && mode !== "precompute") {
+        showError("mode must be 'live' or 'precompute'");
+      } else {
+        const stageParams = new URLSearchParams({ run_id: runId, mode });
+        if (params.get("audio") === "1") stageParams.set("audio", "1");
+        const hudMode = mode === "live" ? "live" : "posthoc";
+        const hudParams = new URLSearchParams({ run_id: runId, mode: hudMode });
+
+        document.getElementById("show-stage-frame").src = `/?${stageParams.toString()}`;
+        document.getElementById("show-hud-frame").src = `/hud?${hudParams.toString()}`;
+      }
+    </script>
+  </body>
+</html>
