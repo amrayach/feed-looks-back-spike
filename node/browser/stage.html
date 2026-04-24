@@ -49,6 +49,7 @@
       import { createFeatureBus } from "/browser/feature_bus.mjs";
       import { createFeatureReplayer } from "/browser/feature_replayer.mjs";
       import { createBindingEngine } from "/browser/binding_engine.mjs";
+      import { createP5Sandbox } from "/browser/p5_sandbox.mjs";
 
       const bootstrap = loadBootstrap({ locationLike: window.location, documentLike: document });
       const mount = document.getElementById("stage-root");
@@ -66,11 +67,15 @@
       const bindingEngine = createBindingEngine({ bus });
       window.__bindingEngine = bindingEngine;
 
+      const p5Sandbox = createP5Sandbox({ mount, bus });
+      window.__p5Sandbox = p5Sandbox;
+
       const reducer = createSceneReducer({
         documentLike: document,
         mount,
         readyTarget: document.body,
         bindingEngine,
+        p5Sandbox,
       });
 
       createWsClient({
