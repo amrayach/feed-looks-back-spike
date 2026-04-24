@@ -173,7 +173,12 @@ export async function createStageServer({
       } else if (url.pathname.startsWith("/vendor/zod/")) {
         filePath = safeResolve(zodRoot, url.pathname.slice("/vendor/zod/".length));
       } else if (url.pathname === "/vendor/p5/p5.min.js") {
-        filePath = join(nodeRoot, "node_modules", "p5", "lib", "p5.min.js");
+        // Served from a checked-in vendored copy (node/vendor/p5/p5.min.js),
+        // not node_modules. The sandbox iframe's CSP is `script-src 'self'`;
+        // serving from our own origin keeps that directive narrow (adding
+        // a CDN origin would weaken the boundary). The vendored bytes are
+        // the contract — see node/vendor/p5/README.md for refresh steps.
+        filePath = join(nodeRoot, "vendor", "p5", "p5.min.js");
       } else {
         const runMatch = /^\/run\/([^/]+)\/(audio\.wav|features_track\.json)$/.exec(url.pathname);
         if (runMatch) {
@@ -463,7 +468,9 @@ if (isDirectNodeExecution) {
     write(join(root, "src", "patch_protocol.mjs"), "export const ok = true;\n");
     write(join(root, "src", "scene_layout.mjs"), "export const ok = true;\n");
     write(join(root, "src", "binding_easing.mjs"), "export const ok = true;\n");
-    write(join(root, "node_modules", "p5", "lib", "p5.min.js"), "// minified p5 fake content ".repeat(500));
+    // Vendored p5 (see node/vendor/p5/README.md). Tests put a byte-sized
+    // fake here; production serves the checked-in real p5.min.js.
+    write(join(root, "vendor", "p5", "p5.min.js"), "// VENDORED P5 MARKER — minified p5 fake ".repeat(500));
     write(join(root, "node_modules", "zod", "index.js"), "export const z = {};\n");
     write(join(root, "image_cache", "test.jpg"), "jpg");
     return root;
@@ -488,9 +495,41 @@ if (isDirectNodeExecution) {
       assert.equal(image.status, 200);
       assert.equal(p5src.status, 200);
       assert.ok(p5src.body.length > 10000, `p5.min.js body too small (${p5src.body.length} bytes) — check vendored path`);
+      // Fix 7: served bytes must come from the vendored copy, not
+      // node_modules. The freshNodeRoot fixture writes a distinctive
+      // marker into vendor/p5/p5.min.js; assert it appears in the
+      // response. (If we ever accidentally point the route back at
+      // node_modules, this test flips red.)
+      assert.match(p5src.body, /VENDORED P5 MARKER/, "p5.min.js is not served from node/vendor/p5/");
       assert.equal(forbidden.status, 404);
     } finally {
       await server.close();
+    }
+  });
+
+  await t("no CDN references for p5 anywhere in node/src or node/browser", async () => {
+    // Fix 7 guard: the sandbox CSP deliberately omits CDN origins. A
+    // `<script src="https://cdn…/p5">` anywhere in our code would leak
+    // past the CSP check at review time, so grep the sources directly.
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const { dirname: dir } = await import("node:path");
+    const here = dir(fileURLToPath(import.meta.url));
+    const nodeDir = join(here, "..");
+    const cdnPatterns = [
+      /cdnjs\.cloudflare\.com[^\s"')]*p5/i,
+      /cdn\.jsdelivr\.net[^\s"')]*p5/i,
+      /unpkg\.com[^\s"')]*p5/i,
+      /cdn\.skypack\.dev[^\s"')]*p5/i,
+    ];
+    const roots = ["src", "browser"].map((d) => join(nodeDir, d));
+    for (const root of roots) {
+      for (const name of readdirSync(root)) {
+        if (!/\.(mjs|js|html)$/i.test(name)) continue;
+        const body = readFileSync(join(root, name), "utf8");
+        for (const pat of cdnPatterns) {
+          assert.ok(!pat.test(body), `CDN reference to p5 in ${root}/${name}: ${pat}`);
+        }
+      }
     }
   });
 
