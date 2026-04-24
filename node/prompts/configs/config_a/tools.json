@@ -71,7 +71,7 @@
         },
         "reactivity": {
           "type": "array",
-          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. SVG forms respond well to tahwil impulses (scale ring-outs) and hijaz_state gating. A sustained vertical line that pulses its scale on each tahwil is a signature Session I move.",
+          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. SVG forms respond well to tahwil impulses (scale ring-outs) and hijaz_state gating. Bind the reactivity to a depicted thing, not to a geometric primitive: a candle flame whose scale surges on each tahwil (curve: impulse), trembling leaves whose rotation jumps on each onset, breath rising from a sleeping figure whose translateY drifts with hijaz_intensity — these are the Session I signature moves.",
           "items": {
             "type": "object",
             "properties": {
@@ -248,13 +248,13 @@
   },
   {
     "name": "setP5Background",
-    "description": "Replace the background p5 sketch layer. Runs behind all other elements. Use for ambient, atmospheric scenes — a flickering oil-lamp interior, a slowly rippling textile, calligraphic strokes forming and fading. Sketches MUST depict recognizable things — no pure particle clouds, flow fields, or geometric noise loops. See hijaz_base.md §Sketches for details. Only one background slot; each call replaces the prior. Returns {sketch_id, retired_id?}.",
+    "description": "Replace the background p5 sketch layer. Runs behind all other elements. Use for ambient, atmospheric scenes — a flickering oil-lamp interior, a slowly rippling textile, calligraphic strokes forming and fading, a lantern's glow across stone. Sketches MUST depict recognizable things, namable in one sentence as a scene or object. See hijaz_base.md §Sketches for details. Only one background slot; each call replaces the prior. Returns {sketch_id, retired_id?}.",
     "input_schema": {
       "type": "object",
       "properties": {
         "code": {
           "type": "string",
-          "description": "Complete p5.js sketch as JavaScript. Runs in a sandboxed iframe. Access audio features via window.features: amplitude (0..1), onset_strength (0..1), spectral_centroid (Hz), hijaz_state (enum string), hijaz_intensity (0..1), hijaz_tahwil (boolean). No external network, no parent DOM access. Depict a recognizable thing — lantern, textile, stroke, doorway, etc. Avoid abstract particle or flow-field patterns."
+          "description": "Complete p5.js sketch as JavaScript. Runs in a sandboxed iframe. Access audio features via window.features: amplitude (0..1), onset_strength (0..1), spectral_centroid (Hz), hijaz_state (enum string), hijaz_intensity (0..1), hijaz_tahwil (boolean). No external network, no parent DOM access. Depict a recognizable thing — lantern, textile, ink stroke, doorway, threshold light, hand, lamp glow, fragment of calligraphy."
         },
         "audio_reactive": {
           "type": "boolean",

@@ -10,13 +10,20 @@ export const ReactivitySchema = z.object({
     "hijaz_intensity",
     "hijaz_tahwil",
   ]),
+  // Inner map is strict: unknown keys reject. Tuple entries must be
+  // finite — Infinity/NaN propagate into easing arithmetic and break
+  // the binding engine downstream.
   map: z.object({
-    in: z.tuple([z.number(), z.number()]),
-    out: z.tuple([z.number(), z.number()]),
+    in: z.tuple([z.number().finite(), z.number().finite()]),
+    out: z.tuple([z.number().finite(), z.number().finite()]),
     curve: z.enum(["linear", "ease-in", "ease-out", "impulse"]),
-  }),
-  smoothing_ms: z.number().optional(),
-});
+  }).strict(),
+  // Smoothing in ms must be nonnegative and finite. An LLM-authored
+  // tool call that forgets the unit and passes Infinity (or a negative
+  // value) must reject, not silently degrade to "forever" or run time
+  // backwards.
+  smoothing_ms: z.number().finite().nonnegative().optional(),
+}).strict();
 
 const HIJAZ_STATES = ["quiet", "approach", "arrived", "tahwil", "aug2"];
 
@@ -100,7 +107,12 @@ export const PatchSchema = z.discriminatedUnion("type", [
     member_ids: z.array(z.string()),
     duration_ms: z.number(),
   }),
-  z.object({ type: z.literal("sketch.background.set"), code: z.string(), audio_reactive: z.boolean() }),
+  z.object({
+    type: z.literal("sketch.background.set"),
+    sketch_id: z.string(),
+    code: z.string(),
+    audio_reactive: z.boolean(),
+  }),
   z.object({
     type: z.literal("sketch.add"),
     sketch_id: z.string(),
