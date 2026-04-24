@@ -243,12 +243,14 @@ export function createSceneReducer({
         break;
       case "sketch.background.set":
         if (p5Sandbox) {
-          // Server minted the sketch_id when applyToolCall(setP5Background)
-          // ran in scene_state; the patch carries it directly. Background
-          // and localized sketches now share the same id namespace, so
-          // retire patches target the same id end-to-end. A preceding
-          // sketch.retire patch (emitted when replacing) has already
-          // torn down the prior iframe by the time we mount here.
+          // Belt-and-suspenders: the server normally emits a sketch.retire
+          // before each background replacement, but the reducer does not
+          // assume it. If we already track a different background, retire
+          // it locally before mounting. Same-id re-set is idempotent (no
+          // retire; mountBackground is called again with identical props).
+          if (currentBackgroundSketchId && currentBackgroundSketchId !== parsed.sketch_id) {
+            p5Sandbox.retireSketch(currentBackgroundSketchId);
+          }
           p5Sandbox.mountBackground({ sketch_id: parsed.sketch_id });
           currentBackgroundSketchId = parsed.sketch_id;
         }
@@ -673,6 +675,65 @@ if (isDirectNodeExecution) {
     });
     reducer.applyPatch({ type: "sketch.retire", sketch_id: "sketch_0010" });
     assert.deepEqual(p5Sandbox.retireCalls, ["sketch_0010"]);
+  });
+
+  t("belt-and-suspenders: consecutive sketch.background.set with different sketch_id retires previous before mount", () => {
+    // The reducer retires the previous background locally even if no
+    // sketch.retire patch arrived between two background.set patches.
+    // Server-side ID parity is the primary guarantee; this is the
+    // second line of defense against a missed retire.
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_first",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    // Second set arrives with NO preceding sketch.retire patch.
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_second",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    assert.equal(p5Sandbox.mountBgCalls.length, 2);
+    assert.equal(p5Sandbox.mountBgCalls[1].sketch_id, "bg_second");
+    assert.deepEqual(p5Sandbox.retireCalls, ["bg_first"]);
+  });
+
+  t("belt-and-suspenders: consecutive sketch.background.set with same sketch_id is idempotent (no retire)", () => {
+    // Same-id re-set is a re-mount with identical props, NOT a
+    // retire+remount. retireCalls must stay empty; mountBackground
+    // is called each time (the reducer does not gate on same-id).
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_same",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_same",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    assert.equal(p5Sandbox.mountBgCalls.length, 2);
+    assert.deepEqual(p5Sandbox.retireCalls, []);
   });
 
   t("belt-and-suspenders N=3: a 4th sketch.add evicts the oldest locally", () => {
