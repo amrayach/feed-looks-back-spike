@@ -107,7 +107,12 @@ export const PatchSchema = z.discriminatedUnion("type", [
     member_ids: z.array(z.string()),
     duration_ms: z.number(),
   }),
-  z.object({ type: z.literal("sketch.background.set"), code: z.string(), audio_reactive: z.boolean() }),
+  z.object({
+    type: z.literal("sketch.background.set"),
+    sketch_id: z.string(),
+    code: z.string(),
+    audio_reactive: z.boolean(),
+  }),
   z.object({
     type: z.literal("sketch.add"),
     sketch_id: z.string(),

@@ -27,12 +27,6 @@ const SANDBOX_CSP_HEADER = [
   "script-src 'self' 'unsafe-eval'",
 ].join("; ");
 
-// Fixed slot key used by sketch.background.set until the patch schema
-// carries sketch_id directly (Fix 6). Localized sketches key by the
-// patch's sketch_id field; the background slot always resolves to this
-// fixed key so the URL the iframe fetches is deterministic.
-const BG_SKETCH_KEY = "__background__";
-
 const VALID_SANDBOX_SLOTS = new Set(["background", "localized"]);
 
 // Escape a string so it is safe to embed inside <script type="application/json">.
@@ -124,11 +118,10 @@ export async function createStageServer({
   let lastLifecyclePatch = null;
   let featureProducerToken = null;
   const clientMeta = new Map();
-  // Per-run map of {sketch_id (or BG_SKETCH_KEY) -> {code, slot}}.
-  // Populated when sketch.add / sketch.background.set patches pass
-  // through broadcastPatch; consumed by the /p5/sandbox route when an
-  // iframe requests its HTML. Cleared on setCurrentRunContext so runs
-  // cannot leak p5 source into each other.
+  // Per-run map of {sketch_id -> {code, slot}}. Populated when sketch.add
+  // / sketch.background.set patches pass through broadcastPatch; consumed
+  // by the /p5/sandbox route when an iframe requests its HTML. Cleared on
+  // setCurrentRunContext so runs cannot leak p5 source into each other.
   const sketchCodes = new Map();
 
   function serveSandboxHtml(res, url) {
@@ -364,15 +357,14 @@ export async function createStageServer({
       }
       // Register sketch code in the per-run map BEFORE broadcasting so
       // by the time the browser mounts the iframe and requests
-      // /p5/sandbox?sketch_id=..., the code is already there. For
-      // sketch.add the patch carries its own sketch_id; for background
-      // we key by BG_SKETCH_KEY until Fix 6 adds sketch_id to the
-      // background patch schema. sketch.retire drops the entry so
+      // /p5/sandbox?sketch_id=..., the code is already there. Both
+      // sketch.add and sketch.background.set carry their own sketch_id
+      // (the id scene_state minted). sketch.retire drops the entry so
       // stale code doesn't accumulate across a run.
       if (patch?.type === "sketch.add" && typeof patch.sketch_id === "string") {
         sketchCodes.set(patch.sketch_id, { code: String(patch.code ?? ""), slot: "localized" });
-      } else if (patch?.type === "sketch.background.set") {
-        sketchCodes.set(BG_SKETCH_KEY, { code: String(patch.code ?? ""), slot: "background" });
+      } else if (patch?.type === "sketch.background.set" && typeof patch.sketch_id === "string") {
+        sketchCodes.set(patch.sketch_id, { code: String(patch.code ?? ""), slot: "background" });
       } else if (patch?.type === "sketch.retire" && typeof patch.sketch_id === "string") {
         sketchCodes.delete(patch.sketch_id);
       }
@@ -574,7 +566,7 @@ if (isDirectNodeExecution) {
     }
   });
 
-  await t("/p5/sandbox for sketch.background.set uses the fixed __background__ slot key", async () => {
+  await t("/p5/sandbox for sketch.background.set registers under the patch's sketch_id", async () => {
     const nodeRoot = freshNodeRoot("flb-stage-server-p5-bg");
     const runDir = join(nodeRoot, "output", "run_p5bg");
     mkdirSync(runDir, { recursive: true });
@@ -583,14 +575,40 @@ if (isDirectNodeExecution) {
       await server.setCurrentRunContext({ runId: "p5bg", mode: "precompute", runDir });
       await server.broadcastPatch({
         type: "sketch.background.set",
+        sketch_id: "sketch_bg_0001",
         code: "function setup(){noLoop();} function draw(){background(10);}",
         audio_reactive: true,
       });
       const res = await requestText(
-        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=__background__&slot=background`,
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=sketch_bg_0001&slot=background`,
       );
       assert.equal(res.status, 200);
       assert.match(res.body, /function draw\(\)\{background\(10\);\}/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("sketch.retire for a background sketch drops the registered code", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-bg-retire");
+    const runDir = join(nodeRoot, "output", "run_p5bgr");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "p5bgr", mode: "precompute", runDir });
+      await server.broadcastPatch({
+        type: "sketch.background.set",
+        sketch_id: "sketch_bg_old",
+        code: "function draw(){background(20);}",
+        audio_reactive: false,
+      });
+      await server.broadcastPatch({ type: "sketch.retire", sketch_id: "sketch_bg_old" });
+      const res = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=sketch_bg_old&slot=background`,
+      );
+      // Graceful-empty after retire — old code must not leak past retire.
+      assert.equal(res.status, 200);
+      assert.doesNotMatch(res.body, /background\(20\)/);
     } finally {
       await server.close();
     }

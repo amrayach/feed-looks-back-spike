@@ -47,11 +47,6 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 2000;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 500;
 const INITIAL_WARMUP_GRACE_MS = 3000;
 
-// Must match node/src/stage_server.mjs BG_SKETCH_KEY. Used as the
-// sketch_id query param for background iframes until Fix 6 lands a
-// real sketch_id on the sketch.background.set patch schema.
-const BG_SANDBOX_SLOT_KEY = "__background__";
-
 function buildSandboxSrc(sketchId, slot) {
   const params = new URLSearchParams({ sketch_id: sketchId, slot });
   return `/p5/sandbox?${params.toString()}`;
@@ -267,15 +262,14 @@ export function createP5Sandbox({
     messageListener = null;
   }
 
-  function mountInternal({ sketchId, urlSketchId, slot, styleCss }) {
+  function mountInternal({ sketchId, slot, styleCss }) {
     installMessageListener();
     subscribeToFeatures();
 
-    // urlSketchId is the key the server uses to look up code in its
-    // per-run sketchCodes map. For localized sketches it equals
-    // sketchId (patch.sketch_id). For background it is BG_SANDBOX_SLOT_KEY
-    // until Fix 6 adds sketch_id to the sketch.background.set patch
-    // schema.
+    // sketchId is both the host-side tracking key AND the URL param the
+    // iframe uses to fetch its code from the server's per-run sketchCodes
+    // map. Background and localized sketches share the same id namespace
+    // (minted by scene_state) so retires target the same id everywhere.
     const iframe = documentLike.createElement("iframe");
     iframe.dataset.sketchId = sketchId;
     iframe.dataset.sketchSlot = slot;
@@ -285,7 +279,7 @@ export function createP5Sandbox({
     // Server serves /p5/sandbox with an HTTP Content-Security-Policy
     // header. The old iframe csp= attribute is not a strong boundary
     // (browser support is partial), so we drop it here.
-    iframe.src = buildSandboxSrc(urlSketchId, slot);
+    iframe.src = buildSandboxSrc(sketchId, slot);
 
     mount.appendChild(iframe);
 
@@ -357,7 +351,6 @@ export function createP5Sandbox({
     ].join("; ");
     mountInternal({
       sketchId: sketch_id,
-      urlSketchId: BG_SANDBOX_SLOT_KEY,
       slot: "background",
       styleCss,
     });
@@ -368,7 +361,6 @@ export function createP5Sandbox({
     const styleCss = `${positionToStyle(position, size)}; z-index: 10`;
     mountInternal({
       sketchId: sketch_id,
-      urlSketchId: sketch_id,
       slot: "localized",
       styleCss,
     });
@@ -558,9 +550,26 @@ if (isDirectNodeExecution) {
     assert.equal(iframe.getAttribute("csp"), undefined);
     // srcdoc is no longer used — iframe loads over HTTP so origin checks work.
     assert.equal(iframe.srcdoc, undefined);
-    // Background sketches use a fixed slot key in the URL until Fix 6.
-    assert.match(iframe.src, /^\/p5\/sandbox\?sketch_id=__background__&slot=background$/);
+    // Background and localized sketches share one id namespace — the URL
+    // sketch_id matches the patch's sketch_id in both cases.
+    assert.match(iframe.src, /^\/p5\/sandbox\?sketch_id=sketch_0001&slot=background$/);
     assert.equal(sandbox._entries.size, 1);
+  });
+
+  await t("two consecutive mountBackground + explicit retire → exactly one iframe (Fix 6)", () => {
+    const { sandbox, mount } = makeSandbox();
+    // First set: mounts sketch_bg_old.
+    sandbox.mountBackground({ sketch_id: "sketch_bg_old" });
+    assert.equal(mount.children.length, 1);
+    assert.match(mount.children[0].src, /sketch_id=sketch_bg_old&slot=background/);
+    // Producer-side behavior: retire the old, then set the new. The
+    // retire targets the server-known id (not a host-synthesized one),
+    // which Fix 6 guarantees end-to-end.
+    sandbox.retireSketch("sketch_bg_old");
+    assert.equal(mount.children.length, 0);
+    sandbox.mountBackground({ sketch_id: "sketch_bg_new" });
+    assert.equal(mount.children.length, 1);
+    assert.match(mount.children[0].src, /sketch_id=sketch_bg_new&slot=background/);
   });
 
   await t("mountLocalized positions the iframe according to position + size and uses src with patch sketch_id", () => {

@@ -124,6 +124,7 @@ export async function emitPatchesForToolResult({
       }
       patches.push({
         type: "sketch.background.set",
+        sketch_id: state.p5_background.sketch_id,
         code: state.p5_background.code,
         audio_reactive: Boolean(state.p5_background.audio_reactive),
       });
@@ -323,6 +324,8 @@ if (isDirectNodeExecution) {
     });
     assert.equal(patches1.length, 1);
     assert.equal(patches1[0].type, "sketch.background.set");
+    // Fix 6: the emitted patch carries the server-minted sketch_id.
+    assert.equal(patches1[0].sketch_id, r1.sketch_id);
     assert.equal(patches1[0].code, "FIRST_CODE");
     assert.equal(patches1[0].audio_reactive, true);
     // Second set — prior id retires first, then new background set.
@@ -336,6 +339,7 @@ if (isDirectNodeExecution) {
     assert.equal(patches2[0].type, "sketch.retire");
     assert.equal(patches2[0].sketch_id, r1.sketch_id);
     assert.equal(patches2[1].type, "sketch.background.set");
+    assert.equal(patches2[1].sketch_id, r2.sketch_id);
     assert.equal(patches2[1].code, "SECOND_CODE");
   });
 
