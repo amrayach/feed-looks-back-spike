@@ -243,13 +243,16 @@ export function createSceneReducer({
         break;
       case "sketch.background.set":
         if (p5Sandbox) {
-          // Background slot has a single implicit id; server-side retire
-          // patch precedes this when replacing. If the old background
-          // wasn't retired first (e.g. operator-side patch only), the
-          // sandbox's mountBackground idempotently replaces by slot.
-          const bgSketchId = `background_${Date.now()}`;
-          p5Sandbox.mountBackground({ sketch_id: bgSketchId, code: parsed.code });
-          currentBackgroundSketchId = bgSketchId;
+          // Belt-and-suspenders: the server normally emits a sketch.retire
+          // before each background replacement, but the reducer does not
+          // assume it. If we already track a different background, retire
+          // it locally before mounting. Same-id re-set is idempotent (no
+          // retire; mountBackground is called again with identical props).
+          if (currentBackgroundSketchId && currentBackgroundSketchId !== parsed.sketch_id) {
+            p5Sandbox.retireSketch(currentBackgroundSketchId);
+          }
+          p5Sandbox.mountBackground({ sketch_id: parsed.sketch_id });
+          currentBackgroundSketchId = parsed.sketch_id;
         }
         break;
       case "sketch.add":
@@ -268,7 +271,6 @@ export function createSceneReducer({
             sketch_id: parsed.sketch_id,
             position: parsed.position,
             size: parsed.size,
-            code: parsed.code,
           });
         }
         break;
@@ -608,7 +610,7 @@ if (isDirectNodeExecution) {
     };
   }
 
-  t("sketch.background.set calls p5Sandbox.mountBackground", () => {
+  t("sketch.background.set calls p5Sandbox.mountBackground with the patch's sketch_id (Fix 6; no code)", () => {
     const documentLike = new FakeDocument();
     const mount = documentLike.createElement("div");
     const p5Sandbox = makeFakeP5Sandbox();
@@ -619,14 +621,21 @@ if (isDirectNodeExecution) {
     });
     reducer.applyPatch({
       type: "sketch.background.set",
+      sketch_id: "sketch_bg_42",
       code: "function draw(){}",
       audio_reactive: true,
     });
     assert.equal(p5Sandbox.mountBgCalls.length, 1);
-    assert.equal(p5Sandbox.mountBgCalls[0].code, "function draw(){}");
+    // Code flows over WS into the server's per-run sketchCodes map; the
+    // iframe loads it from /p5/sandbox. Browser no longer forwards code
+    // to mountBackground.
+    assert.equal(p5Sandbox.mountBgCalls[0].code, undefined);
+    // The host uses the server-minted sketch_id directly — no more
+    // `background_${Date.now()}` synthesis.
+    assert.equal(p5Sandbox.mountBgCalls[0].sketch_id, "sketch_bg_42");
   });
 
-  t("sketch.add calls p5Sandbox.mountLocalized with full spec", () => {
+  t("sketch.add calls p5Sandbox.mountLocalized with sketch_id/position/size (code routed via server)", () => {
     const documentLike = new FakeDocument();
     const mount = documentLike.createElement("div");
     const p5Sandbox = makeFakeP5Sandbox();
@@ -647,6 +656,7 @@ if (isDirectNodeExecution) {
     assert.equal(p5Sandbox.mountLocalizedCalls.length, 1);
     assert.equal(p5Sandbox.mountLocalizedCalls[0].sketch_id, "sketch_0003");
     assert.equal(p5Sandbox.mountLocalizedCalls[0].position, "top-right");
+    assert.equal(p5Sandbox.mountLocalizedCalls[0].code, undefined);
   });
 
   t("sketch.retire calls p5Sandbox.retireSketch and drops from tracked list", () => {
@@ -665,6 +675,65 @@ if (isDirectNodeExecution) {
     });
     reducer.applyPatch({ type: "sketch.retire", sketch_id: "sketch_0010" });
     assert.deepEqual(p5Sandbox.retireCalls, ["sketch_0010"]);
+  });
+
+  t("belt-and-suspenders: consecutive sketch.background.set with different sketch_id retires previous before mount", () => {
+    // The reducer retires the previous background locally even if no
+    // sketch.retire patch arrived between two background.set patches.
+    // Server-side ID parity is the primary guarantee; this is the
+    // second line of defense against a missed retire.
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_first",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    // Second set arrives with NO preceding sketch.retire patch.
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_second",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    assert.equal(p5Sandbox.mountBgCalls.length, 2);
+    assert.equal(p5Sandbox.mountBgCalls[1].sketch_id, "bg_second");
+    assert.deepEqual(p5Sandbox.retireCalls, ["bg_first"]);
+  });
+
+  t("belt-and-suspenders: consecutive sketch.background.set with same sketch_id is idempotent (no retire)", () => {
+    // Same-id re-set is a re-mount with identical props, NOT a
+    // retire+remount. retireCalls must stay empty; mountBackground
+    // is called each time (the reducer does not gate on same-id).
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_same",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      sketch_id: "bg_same",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    assert.equal(p5Sandbox.mountBgCalls.length, 2);
+    assert.deepEqual(p5Sandbox.retireCalls, []);
   });
 
   t("belt-and-suspenders N=3: a 4th sketch.add evicts the oldest locally", () => {

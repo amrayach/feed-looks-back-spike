@@ -2,7 +2,7 @@
 
 ## What Changed from v6.0 → v6.1
 
-Session I adds **p5 sketches**: two new placement tools, `setP5Background` (one ambient slot) and `addP5Sketch` (up to three localized slots, oldest-evicted on overflow). Sketches are real audio-aware JavaScript — you author the code, the browser runs it in a sandboxed iframe with live access to the feature stream. **Sketches must depict recognizable things** — a flickering oil lamp, an ink stroke forming an Arabic letter, a rippling textile, a lantern's glow across a wall. Pure particle clouds, flow fields, and geometric noise loops are explicit rejections. A full **Sketches** section is added below the Reactivity section. v6.0 content preserved verbatim.
+Session I adds **p5 sketches**: two new placement tools, `setP5Background` (one ambient slot) and `addP5Sketch` (up to three localized slots, oldest-evicted on overflow). Sketches are real audio-aware JavaScript — you author the code, the browser runs it in a sandboxed iframe with live access to the feature stream. **Sketches must depict recognizable things** — a flickering oil lamp, an ink stroke forming an Arabic letter, a rippling textile, a lantern's glow across a wall. Every sketch is namable in one sentence as a scene or object. A full **Sketches** section is added below the Reactivity section. v6.0 content preserved verbatim.
 
 ## What Changed from v5.2 → v6.0
 
@@ -480,7 +480,7 @@ Every placement tool (`addText`, `addSVG`, `addImage`, and each member of `addCo
 - **Fast features (amplitude, onset_strength) → on-beat reactions**. `scale` 1.0→1.2 on amplitude gives a pulse. `opacity` 0.5→1.0 on onset_strength gives a pop.
 - **Slow features (hijaz_intensity, spectral_centroid) → lingering behaviors**. `color_hue` drift across `hijaz_intensity` reads as the scene warming or cooling over a phrase. `translateY` on `spectral_centroid` reads as the element lifting with brightness.
 - **`hijaz_tahwil` is impulsive** — use `curve: "impulse"` EVERY time. The impulse curve peaks at t=0.5 and returns to 0 at t=1, which turns a one-frame tahwil event into a visible ring-out that decays over ~200 ms.
-- **`hijaz_state` is an enum encoded numerically** — to trigger a binding only when state is `"tahwil"`, set `map.in=[3, 3]`. The engine treats zero-width input ranges as thresholds: any value ≥ 3 maps to `out[1]`, anything below maps to `out[0]`. Same idea works for `arrived` (map.in=[2,2]) or any other specific state.
+- **`hijaz_state` is an enum encoded numerically** — to trigger a binding only when state is `"tahwil"`, set `map.in=[3, 3]`. The engine treats zero-width input ranges as **exact-match gates**: only the pivot value (3 = tahwil) maps to `out[1]`; everything else (above OR below) maps to `out[0]`. Same idea works for `arrived` (map.in=[2,2]) or any other specific state. For range-valued gating (e.g. "tahwil or aug2"), write an explicit range like `map.in=[3, 4]`.
 
 ### Examples
 
@@ -500,9 +500,9 @@ A text that fades between 60% and 100% opacity with loudness. Subtle — it read
 
 ```
 addSVG({
-  svg_markup: "<svg viewBox='0 0 100 100'><circle cx='50' cy='50' r='30' fill='none' stroke='#c3a07a' stroke-width='2'/></svg>",
+  svg_markup: "<svg viewBox='-50 -50 100 100'><path d='M 0 42 C 22 14, 22 -6, 6 -24 C 0 -32, 10 -42, 0 -40 C -10 -42, 0 -32, -6 -24 C -22 -6, -22 14, 0 42 Z' fill='#e9b24c' opacity='0.88'/><path d='M 0 22 C 10 4, 10 -10, 2 -18 C 0 -22, 4 -28, 0 -24 C -4 -28, 0 -22, -2 -18 C -10 -10, -10 4, 0 22 Z' fill='#fff3c0' opacity='0.9'/></svg>",
   position: "center",
-  semantic_label: "thin halo ring",
+  semantic_label: "candle flame",
   reactivity: [
     { property: "scale", feature: "hijaz_tahwil",
       map: { in: [0, 1], out: [1.0, 1.6], curve: "impulse" } }
@@ -510,7 +510,35 @@ addSVG({
 })
 ```
 
-A ring that remains still at rest, then expands to 1.6× on every tahwil and decays back. Use for modulation moments.
+A candle flame that burns steadily at rest, then surges up on every tahwil and settles back. The figurative wick makes the audio event legible as physical combustion — a thing that reacts — rather than a geometric primitive scaling for its own sake. This is the whole spirit of the section: the reactivity should belong to a depicted thing.
+
+```
+addSVG({
+  svg_markup: "<svg viewBox='-60 -40 120 80'><g stroke='#3c4528' stroke-width='1.5' fill='#6b7a3f' fill-opacity='0.78'><path d='M 0 10 L 0 -30' stroke-linecap='round'/><path d='M 0 -6 C -18 -10, -28 -20, -26 -30 C -16 -22, -6 -14, 0 -6' /><path d='M 0 -14 C 18 -18, 28 -28, 26 -38 C 16 -30, 6 -22, 0 -14' /><path d='M 0 -22 C -14 -26, -22 -34, -20 -40 C -12 -34, -4 -28, 0 -22' /></g></svg>",
+  position: "mid-right",
+  semantic_label: "trembling leaves on a branch",
+  reactivity: [
+    { property: "rotation", feature: "onset_strength",
+      map: { in: [0, 1], out: [-2, 2], curve: "linear" }, smoothing_ms: 120 }
+  ]
+})
+```
+
+Leaves that tremble slightly with each note onset — a small rotation, not a spin. Rotation maps to ±2° across the full onset range; the 120 ms smoothing keeps the motion readable as a natural sway rather than a twitch.
+
+```
+addSVG({
+  svg_markup: "<svg viewBox='-40 -60 80 120'><ellipse cx='0' cy='40' rx='30' ry='8' fill='#2a2a32' opacity='0.85'/><path d='M -14 30 Q 0 18, 14 30 Q 0 10, -14 30 Z' fill='#514d42' opacity='0.75'/><g fill='none' stroke='#9aa0a8' stroke-width='1.2' opacity='0.55'><path d='M -4 -10 C -8 -24, 6 -34, -2 -52' /><path d='M 4 -10 C 0 -28, 12 -38, 2 -54' /></g></svg>",
+  position: "bottom-center",
+  semantic_label: "breath rising from a sleeping figure",
+  reactivity: [
+    { property: "translateY", feature: "hijaz_intensity",
+      map: { in: [0, 1], out: [0, -12], curve: "ease-out" }, smoothing_ms: 800 }
+  ]
+})
+```
+
+A sleeping shape with a thin trail of breath. As hijaz_intensity rises through a phrase the breath lifts (translateY drifts up to −12 px); as intensity releases the breath descends. The 800 ms smoothing keeps the motion slow and bodily — the breath of a living thing across a phrase, not a tracking line on a graph.
 
 ```
 addImage({
@@ -551,7 +579,7 @@ Two tools let you write real p5.js sketches that run inside the browser, sandbox
 
 **Sketches must depict recognizable things.** A lantern, a curtain, a letter forming, a bowl, a threshold, a doorframe, a window of light, a fragment of textile, a calligraphic stroke. Humans recognize what they're looking at.
 
-**Rejected**: pure particle clouds, flow fields, Perlin-noise backgrounds, geometric kaleidoscopes, rotating abstract gradients, color cycling without imagery. These are the visual vocabulary of a screensaver, not of Amer's practice. A scene made of abstract sketches reads as generic algorithmic art — the opposite of Feed Looks Back's intent.
+**Every sketch is describable in one sentence as a scene or an object in the world**: "a candle flame trembling inside a paper lantern," "textile threads pulled by a shift of air," "an ink stroke forming the letter ḥā as water dries," "a lamp glow crossing stone," "a hand easing a curtain aside." If you cannot give a sketch a one-sentence description as a thing, write something that can be named.
 
 The figurative rule is enforced by eye and by critique, not by automatic filtering. Write sketches you could defensibly describe in one sentence as a recognizable scene or object.
 
