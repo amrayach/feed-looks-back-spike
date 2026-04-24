@@ -16,6 +16,7 @@ import {
   snapshotCycle,
 } from "./scene_state.mjs";
 import { applyToolCallDetailed } from "./tool_handlers.mjs";
+import { autoFadeDurationForElement } from "./patch_emitter.mjs";
 import { renderFinalHtml, renderLiveHtml } from "./operator_views.mjs";
 import { createStageServer } from "./stage_server.mjs";
 import {
@@ -577,7 +578,10 @@ function collectAutoFadePatches(state, activeBeforeAutoFade) {
     .map((element) => ({
       type: "element.fade",
       element_id: element.element_id,
-      duration_ms: DEFAULT_PATCH_FADE_DURATION_MS,
+      // v6.2: images get a long opacity-decay (8 s) so their exit reads
+      // as a dissolve rather than a blink. Other types keep the short
+      // default. autoFadeDurationForElement owns the per-type decision.
+      duration_ms: autoFadeDurationForElement(element, DEFAULT_PATCH_FADE_DURATION_MS),
     }));
 }
 

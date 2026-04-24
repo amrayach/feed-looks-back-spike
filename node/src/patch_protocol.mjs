@@ -1,7 +1,65 @@
 import { z } from "zod";
 
+// Layer tokens stamp each element or sketch with a coarse z-order band.
+// The browser reducer translates these into z-index values so Opus can
+// author depth without computing raw numbers. Non-exhaustive: unspecified
+// layers fall back to per-type defaults (see LAYER_DEFAULTS_BY_TYPE).
+export const LAYER_TOKENS = Object.freeze(["background", "midground", "foreground"]);
+export const LAYER_DEFAULTS_BY_TYPE = Object.freeze({
+  text: "foreground",
+  svg: "foreground",
+  image: "midground",
+  p5_background: "background",
+  p5_localized: "background",
+});
+
+// Motion preset tokens. Each expands locally (in the binding engine) into
+// an audio-parameterized kernel that contributes transform/filter state
+// alongside any explicit reactivity bindings. The kernel reads features
+// from the bus but follows its own curve — it is NOT a pre-scripted
+// keyframe animation. The preset is a live response curve.
+//
+// Semantics (guidance for authors, enforced by the engine):
+//   breathe — slow scale oscillation (1.0 ↔ ~1.04) paced by hijaz_intensity
+//   pulse   — scale pops on onset_strength impulses (decays to rest)
+//   orbit   — small circular translateX/translateY drift, amplitude-modulated radius
+//   drift   — slow low-frequency wander in translateX/translateY
+//   tremble — tiny rotation jitter gated by onset_strength
+export const MOTION_PRESETS = Object.freeze(["breathe", "pulse", "orbit", "drift", "tremble"]);
+
+export const MotionSchema = z.object({
+  preset: z.enum(MOTION_PRESETS),
+  // Scalar multiplier on the kernel's output magnitude. Default 1.0.
+  // Clamped finite + nonnegative to block an LLM-authored Infinity that
+  // would blow up the DOM each frame. Zero is a legal "mute" value.
+  intensity: z.number().finite().nonnegative().optional(),
+  // Optional feature override. Each preset has a natural default feature
+  // (breathe→hijaz_intensity, pulse→onset_strength, orbit→amplitude,
+  // drift→hijaz_intensity, tremble→onset_strength); passing an explicit
+  // `feature` lets an author rebind the kernel's input without rewriting
+  // the primitive binding set.
+  feature: z.enum([
+    "amplitude",
+    "onset_strength",
+    "spectral_centroid",
+    "hijaz_state",
+    "hijaz_intensity",
+    "hijaz_tahwil",
+  ]).optional(),
+}).strict();
+
 export const ReactivitySchema = z.object({
-  property: z.enum(["opacity", "scale", "rotation", "translateX", "translateY", "color_hue"]),
+  property: z.enum([
+    "opacity",
+    "scale",
+    "rotation",
+    "translateX",
+    "translateY",
+    "color_hue",
+    // v6.2 additions — filter modulation
+    "blur",
+    "saturation",
+  ]),
   feature: z.enum([
     "amplitude",
     "onset_strength",
@@ -113,6 +171,12 @@ export const ElementSpecSchema = z.object({
   lifetime_s: z.number().nullable(),
   composition_group_id: z.string().nullable(),
   reactivity: z.array(ReactivitySchema).optional(),
+  // v6.2: coarse depth band. Missing → per-type default in the browser.
+  layer: z.enum(LAYER_TOKENS).optional(),
+  // v6.2: motion preset attached to this element. Expands to a live
+  // kernel in binding_engine; one preset per element (compose via
+  // explicit reactivity bindings instead of stacking presets).
+  motion: MotionSchema.optional(),
 });
 
 export const CompositionGroupSchema = z.object({
@@ -158,6 +222,8 @@ export const PatchSchema = z.discriminatedUnion("type", [
     code: z.string(),
     audio_reactive: z.boolean(),
     lifetime_s: z.number().nullable(),
+    // v6.2: optional depth band for the iframe. Omitted → background.
+    layer: z.enum(LAYER_TOKENS).optional(),
   }),
   z.object({ type: z.literal("sketch.retire"), sketch_id: z.string() }),
   z.object({ type: z.literal("cycle.begin"), cycle_n: z.number(), hijaz_state: z.record(z.string(), z.unknown()) }),
@@ -384,6 +450,89 @@ if (isDirectNodeExecution) {
         frames: [],
       }),
     );
+  });
+
+  t("ElementSpecSchema accepts optional layer token and rejects unknown layers", () => {
+    const base = {
+      element_id: "elem_0042",
+      type: "image",
+      content: { query: "x", position: "background" },
+      lifetime_s: null,
+      composition_group_id: null,
+      layer: "midground",
+    };
+    assert.equal(ElementSpecSchema.parse(base).layer, "midground");
+    assert.throws(() => ElementSpecSchema.parse({ ...base, layer: "overlay" }));
+    // Absent layer stays absent (per-type default resolved in the browser).
+    const { layer, ...withoutLayer } = base;
+    assert.equal("layer" in ElementSpecSchema.parse(withoutLayer), false);
+  });
+
+  t("ElementSpecSchema accepts motion preset and rejects non-preset tokens", () => {
+    const base = {
+      element_id: "elem_0043",
+      type: "svg",
+      content: { svg_markup: "<svg></svg>", position: "center", semantic_label: "s" },
+      lifetime_s: 35,
+      composition_group_id: null,
+      motion: { preset: "breathe" },
+    };
+    assert.equal(ElementSpecSchema.parse(base).motion.preset, "breathe");
+    // Every advertised preset is accepted:
+    for (const preset of MOTION_PRESETS) {
+      assert.equal(ElementSpecSchema.parse({ ...base, motion: { preset } }).motion.preset, preset);
+    }
+    // Unknown preset rejected.
+    assert.throws(() => ElementSpecSchema.parse({ ...base, motion: { preset: "shimmer" } }));
+    // Infinity intensity rejected (LLM forgot the unit).
+    assert.throws(() =>
+      ElementSpecSchema.parse({ ...base, motion: { preset: "pulse", intensity: Infinity } }),
+    );
+    // Negative intensity rejected (nonsensical magnitude).
+    assert.throws(() =>
+      ElementSpecSchema.parse({ ...base, motion: { preset: "pulse", intensity: -1 } }),
+    );
+    // Extra keys rejected (strict schema — motion shape is a small contract).
+    assert.throws(() =>
+      ElementSpecSchema.parse({ ...base, motion: { preset: "drift", amplitude: 0.5 } }),
+    );
+  });
+
+  t("ReactivitySchema.property enum now includes blur and saturation", () => {
+    const base = { feature: "amplitude", map: { in: [0, 1], out: [0, 1], curve: "linear" } };
+    for (const property of ["blur", "saturation"]) {
+      assert.equal(ReactivitySchema.parse({ property, ...base }).property, property);
+    }
+    assert.throws(() => ReactivitySchema.parse({ property: "sharpen", ...base }));
+  });
+
+  t("sketch.add patch accepts an optional layer token", () => {
+    const patch = {
+      type: "sketch.add",
+      sketch_id: "sketch_0009",
+      position: "mid-right",
+      size: "medium",
+      code: "noop()",
+      audio_reactive: false,
+      lifetime_s: null,
+      layer: "midground",
+    };
+    assert.equal(PatchSchema.parse(patch).layer, "midground");
+    // Unknown layer rejected.
+    assert.throws(() => PatchSchema.parse({ ...patch, layer: "hud" }));
+    // Omitted layer parses (browser resolves default).
+    const { layer, ...noLayer } = patch;
+    assert.equal("layer" in PatchSchema.parse(noLayer), false);
+  });
+
+  t("LAYER_DEFAULTS_BY_TYPE covers every placement type Opus can author", () => {
+    // If a new element or sketch type is added without updating the
+    // default map, this test fails — future-proofing the z-order contract.
+    const expected = ["text", "svg", "image", "p5_background", "p5_localized"].sort();
+    assert.deepEqual([...Object.keys(LAYER_DEFAULTS_BY_TYPE)].sort(), expected);
+    for (const layer of Object.values(LAYER_DEFAULTS_BY_TYPE)) {
+      assert.ok(LAYER_TOKENS.includes(layer), `default ${layer} is not a legal layer token`);
+    }
   });
 
   t("WsMessageSchema feature arm validates feature/value pair", () => {
