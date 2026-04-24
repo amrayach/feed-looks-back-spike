@@ -79,6 +79,7 @@ export function createSceneReducer({
   mount,
   readyTarget = documentLike?.body ?? mount,
   setTimeoutImpl = globalThis.setTimeout,
+  bindingEngine = null,
 } = {}) {
   if (!mount) throw new Error("mount is required");
 
@@ -125,11 +126,23 @@ export function createSceneReducer({
     nodes.set(elementSpec.element_id, node);
     elementSpecs.set(elementSpec.element_id, elementSpec);
     placeNode(elementSpec, node);
+    // Wire reactivity AFTER the node is inserted so binding_engine can
+    // write style.transform / style.opacity / style.filter. Engine's
+    // mount also de-dupes by element_id so a replayed element.add won't
+    // double-subscribe.
+    if (bindingEngine && Array.isArray(elementSpec.reactivity) && elementSpec.reactivity.length > 0) {
+      bindingEngine.mount(elementSpec.element_id, node, elementSpec.reactivity);
+    }
   }
 
   function removeElement(elementId, durationMs = 0) {
     const node = nodes.get(elementId);
     if (!node) return;
+    // Unsubscribe bindings BEFORE DOM animations start — if the fade takes
+    // 400 ms, we don't want feature_bus still writing transforms during that
+    // window. Engine tolerates unknown ids so double-unmount on group fades
+    // is safe.
+    if (bindingEngine) bindingEngine.unmount(elementId);
     const removeNow = () => {
       node.remove();
       nodes.delete(elementId);
@@ -431,6 +444,167 @@ if (isDirectNodeExecution) {
     const freeLayer = mount.children[0];
     const svgNode = freeLayer.children[0];
     assert.match(svgNode.innerHTML, /width:100%;height:100%/);
+  });
+
+  function makeFakeBindingEngine() {
+    return {
+      mountedIds: [],
+      unmountedIds: [],
+      mount(id, node, reactivity) {
+        this.mountedIds.push({ id, reactivity, nodePresent: Boolean(node) });
+      },
+      unmount(id) {
+        this.unmountedIds.push(id);
+      },
+      dispose() {},
+    };
+  }
+
+  t("element.add with reactivity mounts it on the binding_engine; without it does not mount", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const bindingEngine = makeFakeBindingEngine();
+    const reducer = createSceneReducer({
+      documentLike,
+      mount,
+      readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      bindingEngine,
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_0100",
+        type: "text",
+        content: { content: "pulse", position: "center", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: null,
+        reactivity: [
+          { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0.5, 1], curve: "linear" } },
+        ],
+      },
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_0101",
+        type: "text",
+        content: { content: "still", position: "lower-left", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: null,
+      },
+    });
+    assert.equal(bindingEngine.mountedIds.length, 1);
+    assert.equal(bindingEngine.mountedIds[0].id, "elem_0100");
+    assert.equal(bindingEngine.mountedIds[0].nodePresent, true);
+  });
+
+  t("element.fade unmounts the binding_engine entry BEFORE the DOM fade window starts", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const bindingEngine = makeFakeBindingEngine();
+    const reducer = createSceneReducer({
+      documentLike,
+      mount,
+      readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      bindingEngine,
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_0200",
+        type: "text",
+        content: { content: "soon gone", position: "center", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: null,
+        reactivity: [
+          { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0, 1], curve: "linear" } },
+        ],
+      },
+    });
+    reducer.applyPatch({ type: "element.fade", element_id: "elem_0200", duration_ms: 400 });
+    assert.deepEqual(bindingEngine.unmountedIds, ["elem_0200"]);
+  });
+
+  t("element.remove unmounts binding_engine entry", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const bindingEngine = makeFakeBindingEngine();
+    const reducer = createSceneReducer({
+      documentLike,
+      mount,
+      readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      bindingEngine,
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_0300",
+        type: "text",
+        content: { content: "removed", position: "center", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: null,
+        reactivity: [
+          { property: "scale", feature: "amplitude", map: { in: [0, 1], out: [1, 1.3], curve: "linear" } },
+        ],
+      },
+    });
+    reducer.applyPatch({ type: "element.remove", element_id: "elem_0300" });
+    assert.deepEqual(bindingEngine.unmountedIds, ["elem_0300"]);
+  });
+
+  t("composition_group.fade unmounts every member id", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const bindingEngine = makeFakeBindingEngine();
+    const reducer = createSceneReducer({
+      documentLike,
+      mount,
+      readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      bindingEngine,
+    });
+    reducer.applyPatch({
+      type: "composition_group.add",
+      group: {
+        group_id: "group_0001",
+        group_label: "threshold",
+        member_element_ids: ["elem_0400", "elem_0401"],
+        lifetime_s: null,
+      },
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_0400",
+        type: "text",
+        content: { content: "a", position: "center", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: "group_0001",
+        reactivity: [
+          { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0, 1], curve: "linear" } },
+        ],
+      },
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_0401",
+        type: "text",
+        content: { content: "b", position: "lower-left", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: "group_0001",
+      },
+    });
+    reducer.applyPatch({
+      type: "composition_group.fade",
+      group_id: "group_0001",
+      member_ids: ["elem_0400", "elem_0401"],
+      duration_ms: 400,
+    });
+    assert.deepEqual(bindingEngine.unmountedIds.sort(), ["elem_0400", "elem_0401"]);
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
