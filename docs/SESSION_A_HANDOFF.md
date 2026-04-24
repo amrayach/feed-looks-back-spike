@@ -5,7 +5,7 @@
 **Session A working dir (control):** `/home/amay/Work/build_spikes_tests` — do not edit files here; all work targets the spike repo.
 **Spike repo (target):** `/home/amay/Work/feed-looks-back-spike`
 **Branch at handoff:** `main` @ `306d904`, pushed to `origin/main` at `github.com:amrayach/feed-looks-back-spike`.
-**Phase-5 tip:** `4639eeb` (unmerged; 8 commits ahead of `main`; `main` is 23 commits ahead of where `phase-5` branched).
+**Phase-5 tip:** `97c11dd` (unmerged; 9 commits ahead of where `phase-5` branched; `main` is 24 commits ahead of that divergence). Session B has progressed since this handoff was written; see `PHASE_5_SESSION_HANDOFF.md` on branch `phase-5` for the current phase-5 state.
 
 ---
 
@@ -38,11 +38,12 @@ Sample 1 smoke: 159.9 s duration, 9595 frames, observed states `{quiet, approach
 
 Test count: 178 → 208.
 
-### 1.3 Phase 4 — reactivity (10 commits + plan)
+### 1.3 Phase 4 — reactivity (10 commits including plan)
 
 | File | Role |
 |---|---|
 | `node/src/binding_easing.mjs` (new, shared) | Pure math ported from scaffold UniformMutator. `EASING_CURVES` (linear / ease-in / ease-out / impulse), `applyCurve`, `interpolate`, `mapInputToOutput`, `createLerper`. `DEFAULT_SMOOTHING_MS=50`, `IMPULSE_DEFAULT_SMOOTHING_MS=200`. Zero-width `map.in` treated as equality threshold (supports `hijaz_state` gating). Served at `/shared/binding_easing.mjs`. |
+| `node/src/stage_server.mjs` | Added `/shared/binding_easing.mjs` to the `/shared/` allowlist so the browser can import the shared easing module at runtime (commits `01ea35e`, `fbe8a60`; row added 2026-04-24 per retroactive Codex audit). |
 | `node/browser/binding_engine.mjs` (new) | Per-element subscribe/lerp/apply-to-DOM. `createBindingEngine({bus, rafImpl, cancelRafImpl, now})` → `{mount, unmount, dispose}`. Single rAF loop shared across entries. Transform keys composed in fixed order (scale → rotation → translateX → translateY) for determinism. `hijaz_state` numerically encoded (quiet=0..aug2=4). `hijaz_tahwil` coerced to 0\|1. Late-mount seeds from `bus.last()`. |
 | `node/src/tool_handlers.mjs` | `validateReactivity(raw)` normalizes single-or-array input and Zod-validates each via `ReactivitySchema`. Wired into addText/addSVG/addImage + per-member of addCompositeScene. Atomic composite rejection if any member's reactivity is invalid. |
 | `node/src/scene_state.mjs` | `addElement` accepts optional `reactivity` and stores it top-level when non-empty (shape-stable for non-reactive elements). `formatSummary` marks reactive elements with `(… reactive: prop←feature, …)` clause. |
@@ -56,11 +57,12 @@ Codex never finished a review of `be3b936..93431b0` (agent returned without outp
 
 Test count: 208 → 244.
 
-### 1.4 Phase 6 — p5 sandbox (10 commits + plan)
+### 1.4 Phase 6 — p5 sandbox (9 commits including plan)
 
 | File | Role |
 |---|---|
 | `node/node_modules/p5/` (vendored) | `pnpm add p5` → `p5@2.2.3`. `node/node_modules/p5/lib/p5.min.js` is 963 KB. |
+| `node/package.json`, `node/pnpm-lock.yaml` | `pnpm add p5` (commit `786b789`) recorded `p5@2.2.3` in both files (row added 2026-04-24 per retroactive Codex audit). |
 | `node/src/stage_server.mjs` | Single explicit-path route `/vendor/p5/p5.min.js`. Browser-safety regression test extended to cover every new browser module (binding_engine + p5_sandbox + feature_bus + feature_replayer + binding_easing). |
 | `node/browser/p5_sandbox.mjs` (new) | Host-side iframe manager. `createP5Sandbox({documentLike, mount, bus, fetchImpl, rafImpl, cancelRafImpl, setIntervalImpl, clearIntervalImpl, now, heartbeatTimeoutMs, watchdogIntervalMs, warmupGraceMs, onRetire, onSketchError})` → `{mountBackground, mountLocalized, retireSketch, dispose}`. Iframe template inlined as a template literal. Two sentinel placeholders (`/*__FLB_P5_SOURCE__*/`, `/*__FLB_USER_SKETCH__*/`) substituted at mount time via `buildSketchSrcdoc`. Iframe attributes: `sandbox="allow-scripts"` (no same-origin), `csp="default-src 'none'; script-src 'unsafe-inline'; img-src blob: data:"`. Features posted to iframes via rAF loop. Heartbeat watchdog retires sketches silent for >= 2 s after a 3 s warmup grace. postMessage validation via Zod discriminated union over heartbeat/ready/error types. |
 | `node/src/scene_state.mjs` | Added `p5_background: null`, `p5_sketches: []`, `next_sketch_index: 1`. Helpers: `mintSketchId`, `setP5Background` (replaces + returns `retired_id?`), `addP5SketchSlot` (eviction-on-overflow when cap=3, returns `retired_id?`), `retireP5Sketch`. `formatSummary` adds a P5 SKETCHES block. |
@@ -189,9 +191,9 @@ Spec §14 Phase 7 calls for a Playwright smoke. I did not add one — every Phas
 ## 5. Repo state at handoff
 
 ```
-main (pushed):       306d904 docs(phase-7): production-run plan + Session I vs H comparison scaffold
-phase-5 (unmerged):  4639eeb fix(phase-5): address Codex review findings on self_frame.mjs
-divergence (main...phase-5): 23 ↔ 8
+main (pushed):       c928fcb docs: Session A handoff — comprehensive state + launch prompt for next session
+phase-5 (unmerged):  97c11dd (Session B progressed since; see PHASE_5_SESSION_HANDOFF.md)
+divergence (main...phase-5): 24 ↔ 9  (as of 2026-04-24 retroactive Codex review)
 ```
 
 23 Session-A commits on main since Phase 5 branched. Session A closed Phase 0, delivered Phases 3/4/6 implementations, and wrote Phase 7 scaffold.
