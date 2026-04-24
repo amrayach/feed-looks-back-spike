@@ -87,6 +87,8 @@ export async function createStageServer({
         filePath = join(srcRoot, "binding_easing.mjs");
       } else if (url.pathname.startsWith("/vendor/zod/")) {
         filePath = safeResolve(zodRoot, url.pathname.slice("/vendor/zod/".length));
+      } else if (url.pathname === "/vendor/p5/p5.min.js") {
+        filePath = join(nodeRoot, "node_modules", "p5", "lib", "p5.min.js");
       } else {
         const runMatch = /^\/run\/([^/]+)\/(audio\.wav|features_track\.json)$/.exec(url.pathname);
         if (runMatch) {
@@ -359,6 +361,7 @@ if (isDirectNodeExecution) {
     write(join(root, "src", "patch_protocol.mjs"), "export const ok = true;\n");
     write(join(root, "src", "scene_layout.mjs"), "export const ok = true;\n");
     write(join(root, "src", "binding_easing.mjs"), "export const ok = true;\n");
+    write(join(root, "node_modules", "p5", "lib", "p5.min.js"), "// minified p5 fake content ".repeat(500));
     write(join(root, "node_modules", "zod", "index.js"), "export const z = {};\n");
     write(join(root, "image_cache", "test.jpg"), "jpg");
     return root;
@@ -373,6 +376,7 @@ if (isDirectNodeExecution) {
       const layout = await requestText(`http://${server.host}:${server.port}/shared/scene_layout.mjs`);
       const easing = await requestText(`http://${server.host}:${server.port}/shared/binding_easing.mjs`);
       const image = await requestText(`http://${server.host}:${server.port}/image_cache/test.jpg`);
+      const p5src = await requestText(`http://${server.host}:${server.port}/vendor/p5/p5.min.js`);
       const forbidden = await requestText(`http://${server.host}:${server.port}/shared/not_allowed.mjs`);
       assert.equal(stage.status, 200);
       assert.match(stage.body, /stage/);
@@ -380,6 +384,8 @@ if (isDirectNodeExecution) {
       assert.equal(layout.status, 200);
       assert.equal(easing.status, 200);
       assert.equal(image.status, 200);
+      assert.equal(p5src.status, 200);
+      assert.ok(p5src.body.length > 10000, `p5.min.js body too small (${p5src.body.length} bytes) — check vendored path`);
       assert.equal(forbidden.status, 404);
     } finally {
       await server.close();
