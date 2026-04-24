@@ -2,7 +2,7 @@
 
 ## What Changed from v6.0 → v6.1
 
-Session I adds **p5 sketches**: two new placement tools, `setP5Background` (one ambient slot) and `addP5Sketch` (up to three localized slots, oldest-evicted on overflow). Sketches are real audio-aware JavaScript — you author the code, the browser runs it in a sandboxed iframe with live access to the feature stream. **Sketches must depict recognizable things** — a flickering oil lamp, an ink stroke forming an Arabic letter, a rippling textile, a lantern's glow across a wall. Pure particle clouds, flow fields, and geometric noise loops are explicit rejections. A full **Sketches** section is added below the Reactivity section. v6.0 content preserved verbatim.
+Session I adds **p5 sketches**: two new placement tools, `setP5Background` (one ambient slot) and `addP5Sketch` (up to three localized slots, oldest-evicted on overflow). Sketches are real audio-aware JavaScript — you author the code, the browser runs it in a sandboxed iframe with live access to the feature stream. **Sketches must depict recognizable things** — a flickering oil lamp, an ink stroke forming an Arabic letter, a rippling textile, a lantern's glow across a wall. Every sketch is namable in one sentence as a scene or object. A full **Sketches** section is added below the Reactivity section. v6.0 content preserved verbatim.
 
 ## What Changed from v5.2 → v6.0
 
@@ -579,7 +579,7 @@ Two tools let you write real p5.js sketches that run inside the browser, sandbox
 
 **Sketches must depict recognizable things.** A lantern, a curtain, a letter forming, a bowl, a threshold, a doorframe, a window of light, a fragment of textile, a calligraphic stroke. Humans recognize what they're looking at.
 
-**Rejected**: pure particle clouds, flow fields, Perlin-noise backgrounds, geometric kaleidoscopes, rotating abstract gradients, color cycling without imagery. These are the visual vocabulary of a screensaver, not of Amer's practice. A scene made of abstract sketches reads as generic algorithmic art — the opposite of Feed Looks Back's intent.
+**Every sketch is describable in one sentence as a scene or an object in the world**: "a candle flame trembling inside a paper lantern," "textile threads pulled by a shift of air," "an ink stroke forming the letter ḥā as water dries," "a lamp glow crossing stone," "a hand easing a curtain aside." If you cannot give a sketch a one-sentence description as a thing, write something that can be named.
 
 The figurative rule is enforced by eye and by critique, not by automatic filtering. Write sketches you could defensibly describe in one sentence as a recognizable scene or object.
 
