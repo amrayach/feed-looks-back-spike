@@ -1,9 +1,12 @@
 // node/src/prompts_aesthetic.mjs
-// Regression tests for spec §1 ("figurative, not abstract"). The
-// prompt is a load-bearing artifact: replacing a figurative exemplar
-// with a geometric primitive (halo ring, pulsing line, flow field)
-// breaks the piece's aesthetic contract even if every other test is
-// green. This module exists only to freeze those exemplars.
+// Regression tests for spec §1 ("figurative, not abstract"). The prompt
+// is a load-bearing artifact. Any appearance of an abstract aesthetic
+// category in prompt text — even as an example of what to avoid —
+// pattern-matches as a seed for Opus, which historically regressed
+// toward whatever shape was named regardless of surrounding negation.
+// So this test is strict: the forbidden vocabulary must not appear
+// at all. Tell Opus what to DO (figurative motifs); never mention
+// what to avoid by name.
 //
 // Scope: node/prompts/hijaz_base.md + node/prompts/configs/*/tools.json.
 // Running: node node/src/prompts_aesthetic.mjs
@@ -15,45 +18,51 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_ROOT = join(__dirname, "..", "prompts");
 
+// Canonical forbidden aesthetic vocabulary. Any case-insensitive
+// word-boundary match in a prompt source fails the test. Adding a
+// term here is a scope expansion; removing one requires a plan
+// amendment — this list is a contract, not a suggestion.
+export const FORBIDDEN_AESTHETIC_TERMS = [
+  "halo ring",
+  "pulsing line",
+  "flow field",
+  "flow-field",
+  "particle",
+  "particles",
+  "particle system",
+  "noise field",
+  "noise-field",
+  "noise loop",
+  "perlin noise",
+  "perlin-noise",
+];
+
+// At-least-one must appear in hijaz_base.md. Guards against an
+// over-zealous scrub that strips every example and leaves nothing
+// concrete for Opus to pattern-match on.
+const REQUIRED_FIGURATIVE_MOTIFS = [
+  /\bcandle\b/i,
+  /\bleaf\b|\bleaves\b/i,
+  /\bbreath\b/i,
+  /\btextile\b/i,
+  /\bcalligraphic\b/i,
+  /\blantern\b/i,
+];
+
 function promptSources() {
   const files = [join(PROMPTS_ROOT, "hijaz_base.md")];
   const configsRoot = join(PROMPTS_ROOT, "configs");
   try {
     for (const cfg of readdirSync(configsRoot)) {
-      const toolsPath = join(configsRoot, cfg, "tools.json");
-      try { files.push(toolsPath); } catch { /* skip */ }
+      files.push(join(configsRoot, cfg, "tools.json"));
     }
   } catch { /* configs dir may be absent in some repos */ }
   return files;
 }
 
-// Patterns that must NOT appear as exemplars the LLM can pattern-match
-// on. These are the shapes that steered prior runs into abstract
-// screensaver territory.
-const BANNED_EXEMPLARS = [
-  { pattern: /halo ring/i,   name: "\"halo ring\"" },
-  { pattern: /pulsing line/i, name: "\"pulsing line\"" },
-];
-
-// "flow field", "particle", "noise field" ARE allowed in the prompt
-// — but ONLY in the context of explicit rejection ("no particle
-// clouds", "flow fields are rejections"). A positive exemplar like
-// "a flow-field background" would regress the aesthetic.
-const CONTEXTUAL_BANS = [
-  { pattern: /flow field/i,   name: "flow field" },
-  { pattern: /particle cloud/i, name: "particle cloud" },
-  { pattern: /noise field/i,   name: "noise field" },
-];
-// For contextual bans we look within ±80 chars for a rejection marker.
-const REJECTION_CUES = /(no\b|avoid|reject|not\b|without|never)/i;
-
-// At least one of these figurative motifs MUST appear as an exemplar
-// somewhere in hijaz_base.md. Tracks spec §1's required motifs.
-const REQUIRED_FIGURATIVE_MOTIFS = [
-  /candle flame/i,
-  /trembling leaves/i,
-  /breath rising/i,
-];
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 const isDirectNodeExecution =
   typeof process !== "undefined" &&
@@ -75,44 +84,41 @@ if (isDirectNodeExecution) {
     }
   }
 
-  t("no banned exemplars (halo ring, pulsing line) appear in any prompt source", () => {
+  t("no forbidden aesthetic term appears in any prompt source (strict, zero-hit)", () => {
     for (const file of promptSources()) {
       const body = readFileSync(file, "utf8");
-      for (const { pattern, name } of BANNED_EXEMPLARS) {
-        assert.ok(!pattern.test(body), `${name} still appears in ${file}`);
+      for (const term of FORBIDDEN_AESTHETIC_TERMS) {
+        const re = new RegExp("\\b" + escapeRegex(term) + "\\b", "i");
+        assert.ok(!re.test(body), `"${term}" still appears in ${file}`);
       }
     }
   });
 
-  t("contextually banned phrases (flow field, particle cloud, noise field) only appear within a rejection cue", () => {
-    for (const file of promptSources()) {
-      const body = readFileSync(file, "utf8");
-      for (const { pattern, name } of CONTEXTUAL_BANS) {
-        let re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
-        let match;
-        while ((match = re.exec(body))) {
-          const start = Math.max(0, match.index - 80);
-          const end = Math.min(body.length, match.index + match[0].length + 80);
-          const window = body.slice(start, end);
-          assert.ok(
-            REJECTION_CUES.test(window),
-            `"${name}" appears in ${file} without a rejection cue nearby:\n  ...${window}...`,
-          );
-        }
-      }
-    }
-  });
-
-  t("required figurative motifs appear in hijaz_base.md", () => {
+  t("at least one figurative motif appears in hijaz_base.md", () => {
     const body = readFileSync(join(PROMPTS_ROOT, "hijaz_base.md"), "utf8");
-    const missing = REQUIRED_FIGURATIVE_MOTIFS.filter((re) => !re.test(body));
-    assert.equal(missing.length, 0, `missing motifs: ${missing.map((r) => r.source).join(", ")}`);
+    const hit = REQUIRED_FIGURATIVE_MOTIFS.find((re) => re.test(body));
+    assert.ok(
+      hit,
+      "hijaz_base.md has no figurative motif from the required list — prompt may have been over-scrubbed",
+    );
+  });
+
+  t("FORBIDDEN_AESTHETIC_TERMS contains every term the rework plan enumerates", () => {
+    // Deletion guard. If you're removing one of these, amend the plan
+    // first; the test is here to catch accidental scope shrinkage.
+    const required = [
+      "halo ring", "pulsing line",
+      "flow field", "flow-field",
+      "particle", "particles", "particle system",
+      "noise field", "noise-field", "noise loop",
+      "perlin noise", "perlin-noise",
+    ];
+    const missing = required.filter((term) => !FORBIDDEN_AESTHETIC_TERMS.includes(term));
+    assert.deepEqual(missing, [], `missing forbidden terms: ${missing.join(", ")}`);
   });
 
   t("hijaz_state doc reflects exact-match gating (Fix 4), not threshold semantics", () => {
     const body = readFileSync(join(PROMPTS_ROOT, "hijaz_base.md"), "utf8");
-    // Prior doc text said "any value ≥ 3 maps to out[1]" — the engine
-    // no longer behaves that way.
     assert.ok(!/value\s*≥\s*3\s*maps to/i.test(body), "old threshold-semantics doc still present");
     assert.ok(/exact-match/i.test(body), "doc should describe collapsed map.in as exact-match");
   });
