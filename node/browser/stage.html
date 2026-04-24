@@ -67,7 +67,24 @@
       const bindingEngine = createBindingEngine({ bus });
       window.__bindingEngine = bindingEngine;
 
-      const p5Sandbox = createP5Sandbox({ mount, bus });
+      const p5Sandbox = createP5Sandbox({
+        mount,
+        bus,
+        // A thrown sketch surfaces here. Keep it console-level only;
+        // retireAndReplace already mounts a figurative DOM fallback
+        // in the slot so the stage never goes blank.
+        onSketchError: (info) => {
+          console.warn("[p5_sandbox] sketch error", info.sketch_id, info.message);
+        },
+        // Reason values: "retire" (author-driven), "remount" (same id
+        // re-added), "dispose" (page teardown), "sketch-error"
+        // (postMessage), "heartbeat-timeout" (watchdog).
+        onRetire: (info) => {
+          if (info.reason === "sketch-error" || info.reason === "heartbeat-timeout") {
+            console.warn("[p5_sandbox] sketch retired", info.sketch_id, info.reason);
+          }
+        },
+      });
       window.__p5Sandbox = p5Sandbox;
 
       const reducer = createSceneReducer({
