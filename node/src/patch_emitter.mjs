@@ -18,13 +18,21 @@ function findGroup(state, groupId) {
 }
 
 function normalizeElementForPatch(element, contentOverrides = null) {
-  return {
+  const patch = {
     element_id: element.element_id,
     type: element.type,
     content: contentOverrides ? { ...clone(element.content), ...contentOverrides } : clone(element.content),
     lifetime_s: element.lifetime_s ?? null,
     composition_group_id: element.content?.composition_group_id ?? null,
   };
+  // ElementSpecSchema accepts reactivity as an optional top-level array.
+  // We forward the stored array verbatim — scene_state only attaches
+  // reactivity when non-empty, so the wire shape stays stable for
+  // non-reactive elements.
+  if (Array.isArray(element.reactivity) && element.reactivity.length > 0) {
+    patch.reactivity = clone(element.reactivity);
+  }
+  return patch;
 }
 
 function invalidSvgPlaceholder(reason, label) {
@@ -240,6 +248,35 @@ if (isDirectNodeExecution) {
     const patches = await emitPatchesForToolResult({ state, toolUseBlock: block, result });
     assert.equal(patches.filter((patch) => patch.type === "element.add").length, 2);
     assert.equal(patches.find((patch) => patch.type === "composition_group.add").group.group_id, groupId);
+  });
+
+  await t("element.add patch carries reactivity when the stored element has it", async () => {
+    const state = freshState();
+    const reactivity = [
+      { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0.5, 1], curve: "linear" } },
+    ];
+    const element_id = addElement(state, {
+      type: "text",
+      content: { content: "pulse", position: "center", style: "serif" },
+      lifetime_s: null,
+      reactivity,
+    });
+    const block = { name: "addText", input: { content: "pulse", position: "center", style: "serif" } };
+    const patches = await emitPatchesForToolResult({ state, toolUseBlock: block, result: { element_id } });
+    assert.equal(patches[0].type, "element.add");
+    assert.deepEqual(patches[0].element.reactivity, reactivity);
+    // Non-reactive elements still don't carry the key:
+    const plainId = addElement(state, {
+      type: "text",
+      content: { content: "plain", position: "center", style: "serif" },
+      lifetime_s: null,
+    });
+    const plainPatches = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "addText", input: { content: "plain", position: "center", style: "serif" } },
+      result: { element_id: plainId },
+    });
+    assert.equal("reactivity" in plainPatches[0].element, false);
   });
 
   await t("addImage emits browser_url when fetch succeeds", async () => {
