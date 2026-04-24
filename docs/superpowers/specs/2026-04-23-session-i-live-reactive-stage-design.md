@@ -143,7 +143,7 @@ Served statically by `stage_server.mjs` at the same port as the WebSocket endpoi
 - `/` → `node/browser/stage.html`
 - `/browser/*.mjs` → `node/browser/*.mjs`
 - `/shared/*.mjs` → `node/src/*.mjs` (narrow allowlist: `patch_protocol.mjs`, `binding_easing.mjs` — the two modules consumed by both Node and the browser). Serving only the allowlist avoids accidentally exposing `opus_client.mjs` or other Node-only code.
-- `/vendor/p5/p5.min.js` → the checked-in vendored copy at `node/vendor/p5/p5.min.js` (v2.2.3, 963 KB, LGPL-2.1). Served as a static file with long-lived cache headers. The `/p5/sandbox` route's HTML shell references this path, so sketches have no external-CDN dependency during performance. Refresh procedure documented in `node/vendor/p5/README.md`.
+- `/vendor/p5/p5.min.js` → the checked-in vendored copy at `node/vendor/p5/p5.min.js` (v2.2.3, 963 KB, LGPL-2.1). Served as a static file. stage_server currently emits `cache-control: no-store` for all static assets (`stage_server.mjs` around line 198) so iterative authoring always sees the latest file on reload; this is safe because the vendored asset is local and small. The `/p5/sandbox` route's HTML shell references this path, so sketches have no external-CDN dependency during performance. Refresh procedure documented in `node/vendor/p5/README.md`.
 - `/p5/sandbox?sketch_id=<id>&slot=<background|localized>` → synthetic HTML shell for sketch iframes. Serves the `<script src="/vendor/p5/p5.min.js">` tag, the `<script src="/p5/bridge.js">` tag, and the per-run sketch code keyed by `sketch_id`. Response carries a strict HTTP `Content-Security-Policy` header (see §7.3). The iframe points at this URL via its `src` attribute.
 - `/p5/bridge.js` → the host↔iframe message-handling code served as a separate static asset so the CSP can limit script sources to `'self'`.
 - `/run/<run_id>/audio.wav` → `node/output/<run_id>/audio.wav` (pre-recorded mode source audio; file copied or symlinked into the run directory at run start)
@@ -171,7 +171,7 @@ http://<host>:<port>/?run_id=<run_id>&mode=<precompute|live>
 | `feature_replayer.mjs` | **Pre-recorded mode only.** Fetches `/run/<run_id>/features_track.json` (pre-computed by Python with ALL features — amplitude, onset_strength, spectral_centroid, hijaz_state, hijaz_intensity, hijaz_tahwil); dispatches every feature to feature_bus synced to `<audio>.currentTime`. Browser performs no audio analysis. |
 | `ws_client.mjs` | WebSocket client: receives scene patches + (live mode) Python feature events, both multiplexed by `channel`; forwards features to feature_bus, patches to scene_reducer |
 | `binding_engine.mjs` | Reads each element's `reactivity` config; subscribes to feature_bus; updates DOM properties per audio frame using `binding_easing.mjs` (shared with Node). Handles multi-binding per element, smoothing_ms, curve easing. |
-| `p5_sandbox.mjs` | Manages background slot + up to 3 localized sketch iframes; handles lifecycle (mount, retire on watchdog timeout / script error / N=3 overflow); injects feature bridge via postMessage |
+| `p5_sandbox.mjs` | Manages background slot + up to 3 localized sketch iframes; handles lifecycle (mount, retire on watchdog timeout / script error / N=3 overflow); forwards features over a `MessageChannel` port transferred to each iframe on a single load-event handshake (see §7.3) |
 
 ### 5.3 Python modules
 
@@ -306,7 +306,7 @@ Dynamic reference: Opus sees its own previous rendered output at moments when co
 
 ### 7.3 Sandbox & safety
 
-Each sketch runs in an iframe that loads from the synthetic `/p5/sandbox` route (see §5.2). The route returns an HTML shell with `<script src="/vendor/p5/p5.min.js">`, `<script src="/p5/bridge.js">`, and an inline `<script>` tag carrying the per-run sketch code for the requested `sketch_id`. The iframe references the route via its `src` attribute so the HTTP response's `Content-Security-Policy` header is what enforces the sandbox contract.
+Each sketch runs in an iframe that loads from the synthetic `/p5/sandbox` route (see §5.2). The route returns an HTML shell with `<script src="/vendor/p5/p5.min.js">`, `<script src="/p5/bridge.js">`, and a `<script type="application/json" id="flb-sketch-code">` element carrying the per-run sketch code for the requested `sketch_id`. The bridge reads that JSON-payload element on load and runs the code via indirect eval (see the `unsafe-eval` note below). The iframe references the route via its `src` attribute so the HTTP response's `Content-Security-Policy` header is what enforces the sandbox contract.
 
 ```html
 <iframe class="p5-sketch"
@@ -323,7 +323,7 @@ Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval';
                          img-src blob: data:
 ```
 
-`unsafe-eval` is present because p5 uses `new Function(...)` for user-provided code; it is safe inside an opaque-origin sandboxed iframe because the eval'd code runs with the same no-parent / no-network restrictions as the sketch itself.
+`unsafe-eval` is present because `/p5/bridge.js` reads the sketch code from the `flb-sketch-code` JSON-payload element and runs it via indirect eval — `(0, eval)(code)` — so p5's global-mode hooks (`setup`, `draw`) land on `window` rather than being scoped inside the bridge's function body. It is safe inside an opaque-origin sandboxed iframe because the eval'd code runs with the same no-parent / no-network restrictions as the sketch itself.
 
 **p5 vendoring.** `p5` is listed as a dev dependency in `node/package.json` for editor tooling only. The served asset is the checked-in `node/vendor/p5/p5.min.js` (v2.2.3, 963 KB, LGPL-2.1). Refresh procedure — re-copying from the npm package after a version bump — is documented in `node/vendor/p5/README.md`. At runtime, stage_server serves the vendored file directly; no startup read of `node_modules` is performed.
 
