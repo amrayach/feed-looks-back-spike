@@ -3,10 +3,19 @@ import {
   setBackground,
   fadeElement,
   addCompositionGroup,
+  setP5Background,
+  addP5SketchSlot,
   DEFAULT_LIFETIMES,
 } from "./scene_state.mjs";
 import { emitPatchesForToolResult } from "./patch_emitter.mjs";
 import { ReactivitySchema } from "./patch_protocol.mjs";
+
+const VALID_P5_POSITIONS = new Set([
+  "top-left", "top-center", "top-right",
+  "mid-left", "center", "mid-right",
+  "bottom-left", "bottom-center", "bottom-right",
+]);
+const VALID_P5_SIZES = new Set(["small", "medium", "large"]);
 
 // Accept either a single binding object or an array. Returns
 // {ok: true, normalized: Reactivity[] | null} on success, or
@@ -106,6 +115,49 @@ function handleFadeElement(state, input) {
   const err = requireString(input, "element_id");
   if (err) return err;
   return fadeElement(state, input.element_id);
+}
+
+function handleSetP5Background(state, input) {
+  const err = requireString(input, "code");
+  if (err) return err;
+  if (typeof input.audio_reactive !== "boolean") {
+    return { error: "field 'audio_reactive' must be a boolean" };
+  }
+  const { sketch_id, retired_id } = setP5Background(state, {
+    code: input.code,
+    audio_reactive: input.audio_reactive,
+  });
+  // retired_id surfaced to the caller so patch_emitter can emit
+  // sketch.retire before sketch.background.set. Tool result stays terse.
+  return retired_id
+    ? { sketch_id, retired_id }
+    : { sketch_id };
+}
+
+function handleAddP5Sketch(state, input) {
+  for (const field of ["position", "code"]) {
+    const err = requireString(input, field);
+    if (err) return err;
+  }
+  if (!VALID_P5_POSITIONS.has(input.position)) {
+    return { error: `invalid position '${input.position}'; expected one of ${[...VALID_P5_POSITIONS].join(", ")}` };
+  }
+  if (!VALID_P5_SIZES.has(input.size)) {
+    return { error: `invalid size '${input.size}'; expected one of small|medium|large` };
+  }
+  if (typeof input.audio_reactive !== "boolean") {
+    return { error: "field 'audio_reactive' must be a boolean" };
+  }
+  const { sketch_id, retired_id } = addP5SketchSlot(state, {
+    position: input.position,
+    size: input.size,
+    code: input.code,
+    audio_reactive: input.audio_reactive,
+    lifetime_s: input.lifetime_s ?? null,
+  });
+  return retired_id
+    ? { sketch_id, retired_id }
+    : { sketch_id };
 }
 
 // Validate a single composite element entry. Returns null on success,
@@ -230,6 +282,10 @@ export function applyToolCall(state, toolUseBlock) {
       return handleFadeElement(state, input);
     case "addCompositeScene":
       return handleAddCompositeScene(state, input);
+    case "setP5Background":
+      return handleSetP5Background(state, input);
+    case "addP5Sketch":
+      return handleAddP5Sketch(state, input);
     default:
       return { error: `unknown tool '${toolUseBlock?.name}'` };
   }
@@ -910,6 +966,114 @@ if (isDirectNodeExecution) {
     const second = s.elements.find((e) => e.element_id === r.element_ids[1]);
     assert.equal(first.reactivity?.[0].property, "opacity");
     assert.equal("reactivity" in second, false);
+  });
+
+  t("applyToolCall setP5Background returns {sketch_id} on fresh slot", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p1",
+      name: "setP5Background",
+      input: { code: "function draw(){ background(0); }", audio_reactive: true },
+    });
+    assert.ok(typeof r.sketch_id === "string" && r.sketch_id.startsWith("sketch_"));
+    assert.equal(r.retired_id, undefined);
+    assert.equal(s.p5_background.sketch_id, r.sketch_id);
+  });
+
+  t("applyToolCall setP5Background returns {sketch_id, retired_id} when replacing", () => {
+    const s = freshState();
+    const r1 = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p2a",
+      name: "setP5Background",
+      input: { code: "first", audio_reactive: false },
+    });
+    const r2 = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p2b",
+      name: "setP5Background",
+      input: { code: "second", audio_reactive: true },
+    });
+    assert.equal(r2.retired_id, r1.sketch_id);
+  });
+
+  t("applyToolCall setP5Background rejects missing/invalid fields", () => {
+    const s = freshState();
+    const r1 = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p3a",
+      name: "setP5Background",
+      input: { audio_reactive: true },
+    });
+    assert.match(r1.error, /code/);
+    const r2 = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p3b",
+      name: "setP5Background",
+      input: { code: "ok", audio_reactive: "yes" },
+    });
+    assert.match(r2.error, /audio_reactive/);
+    assert.equal(s.p5_background, null);
+  });
+
+  t("applyToolCall addP5Sketch validates position + size + audio_reactive", () => {
+    const s = freshState();
+    const good = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p4a",
+      name: "addP5Sketch",
+      input: { position: "center", size: "small", code: "noop", audio_reactive: true },
+    });
+    assert.ok(good.sketch_id);
+
+    const badPos = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p4b",
+      name: "addP5Sketch",
+      input: { position: "nowhere", size: "small", code: "noop", audio_reactive: true },
+    });
+    assert.match(badPos.error, /invalid position/);
+
+    const badSize = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p4c",
+      name: "addP5Sketch",
+      input: { position: "center", size: "gigantic", code: "noop", audio_reactive: true },
+    });
+    assert.match(badSize.error, /invalid size/);
+
+    const badReact = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_p4d",
+      name: "addP5Sketch",
+      input: { position: "center", size: "small", code: "noop", audio_reactive: "true" },
+    });
+    assert.match(badReact.error, /audio_reactive/);
+
+    assert.equal(s.p5_sketches.length, 1);
+  });
+
+  t("applyToolCall addP5Sketch evicts oldest and surfaces retired_id on overflow", () => {
+    const s = freshState();
+    const r1 = applyToolCall(s, {
+      type: "tool_use", id: "t1", name: "addP5Sketch",
+      input: { position: "top-left", size: "small", code: "a", audio_reactive: false },
+    });
+    applyToolCall(s, {
+      type: "tool_use", id: "t2", name: "addP5Sketch",
+      input: { position: "center", size: "medium", code: "b", audio_reactive: false },
+    });
+    applyToolCall(s, {
+      type: "tool_use", id: "t3", name: "addP5Sketch",
+      input: { position: "bottom-right", size: "large", code: "c", audio_reactive: true },
+    });
+    const r4 = applyToolCall(s, {
+      type: "tool_use", id: "t4", name: "addP5Sketch",
+      input: { position: "mid-left", size: "small", code: "d", audio_reactive: true },
+    });
+    assert.equal(r4.retired_id, r1.sketch_id);
+    assert.equal(s.p5_sketches.length, 3);
   });
 
   t("applyToolCall addCompositeScene rejects when any member has invalid reactivity (atomic)", () => {

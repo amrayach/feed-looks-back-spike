@@ -64,6 +64,12 @@ export function createInitialState() {
     current_elapsed_s: null,
     cycle_history: [],
     activity_history: [],
+    // Phase 6: p5 sketch slots. Background is a scalar (one at a time).
+    // Localized is a list capped at 3 — eviction-on-overflow, never rejection
+    // (spec §7.3 + §14 Phase 6 locked decision).
+    p5_background: null,
+    p5_sketches: [],
+    next_sketch_index: 1,
   };
 }
 
@@ -112,6 +118,78 @@ function mintGroupId(state) {
   const id = `group_${String(state.next_group_index).padStart(4, "0")}`;
   state.next_group_index += 1;
   return id;
+}
+
+function mintSketchId(state) {
+  if (typeof state.next_sketch_index !== "number") state.next_sketch_index = 1;
+  const id = `sketch_${String(state.next_sketch_index).padStart(4, "0")}`;
+  state.next_sketch_index += 1;
+  return id;
+}
+
+// Phase 6: replace the single ambient background sketch slot. Returns
+// {sketch_id, retired_id?} — retired_id is set when a prior background
+// was in place so the caller (patch_emitter) can emit a sketch.retire
+// patch before the sketch.background.set patch.
+export function setP5Background(state, { code, audio_reactive }) {
+  if (!Array.isArray(state.p5_sketches)) state.p5_sketches = [];
+  const retired_id = state.p5_background?.sketch_id ?? null;
+  const sketch_id = mintSketchId(state);
+  state.p5_background = {
+    sketch_id,
+    code,
+    audio_reactive: Boolean(audio_reactive),
+    created_at_cycle: state.current_cycle_index,
+    created_at_elapsed_s: state.current_elapsed_s,
+  };
+  recordActivity(state, "p5_background", 1);
+  return { sketch_id, retired_id };
+}
+
+// Phase 6: add a localized sketch. N=3 cap via eviction-on-overflow: if
+// three localized sketches are already mounted, the oldest is removed
+// first (returned as retired_id). The caller emits sketch.retire (if
+// retired_id) BEFORE the sketch.add patch to keep the browser-side
+// slot bookkeeping coherent.
+export function addP5SketchSlot(state, { position, size, code, audio_reactive, lifetime_s }) {
+  if (!Array.isArray(state.p5_sketches)) state.p5_sketches = [];
+  let retired_id = null;
+  if (state.p5_sketches.length >= 3) {
+    const oldest = state.p5_sketches.shift();
+    retired_id = oldest?.sketch_id ?? null;
+  }
+  const sketch_id = mintSketchId(state);
+  const resolvedLifetime =
+    typeof lifetime_s === "number" && Number.isFinite(lifetime_s) ? lifetime_s : null;
+  state.p5_sketches.push({
+    sketch_id,
+    position,
+    size,
+    code,
+    audio_reactive: Boolean(audio_reactive),
+    lifetime_s: resolvedLifetime,
+    created_at_cycle: state.current_cycle_index,
+    created_at_elapsed_s: state.current_elapsed_s,
+  });
+  recordActivity(state, "p5_sketch", 1);
+  return { sketch_id, retired_id };
+}
+
+// Phase 6: remove a sketch by id from whichever slot holds it. Returns
+// the slot name ('background' | 'localized') or null if not found.
+export function retireP5Sketch(state, sketch_id) {
+  if (state.p5_background?.sketch_id === sketch_id) {
+    state.p5_background = null;
+    return "background";
+  }
+  if (Array.isArray(state.p5_sketches)) {
+    const idx = state.p5_sketches.findIndex((s) => s.sketch_id === sketch_id);
+    if (idx !== -1) {
+      state.p5_sketches.splice(idx, 1);
+      return "localized";
+    }
+  }
+  return null;
 }
 
 // Mints a fresh composition_group_id and registers its label + creation
@@ -653,6 +731,26 @@ export function formatSummary(state) {
       for (const el of svgEls) lines.push(formatSvgLine(el, elapsed));
       lines.push("");
     }
+  }
+
+  // Phase 6: p5 sketch summary — background + up to 3 localized.
+  const hasBg = !!state.p5_background;
+  const localized = Array.isArray(state.p5_sketches) ? state.p5_sketches : [];
+  if (hasBg || localized.length > 0) {
+    lines.push(`P5 SKETCHES [${(hasBg ? 1 : 0) + localized.length} active]:`);
+    if (hasBg) {
+      const age = Math.max(0, Math.round((elapsed ?? 0) - (state.p5_background.created_at_elapsed_s ?? 0)));
+      const reactive = state.p5_background.audio_reactive ? "audio-reactive" : "static";
+      const preview = String(state.p5_background.code ?? "").slice(0, 60).replace(/\s+/g, " ");
+      lines.push(`- ${state.p5_background.sketch_id} BACKGROUND (${age}s old, ${reactive}): ${preview}`);
+    }
+    for (const s of localized) {
+      const age = Math.max(0, Math.round((elapsed ?? 0) - (s.created_at_elapsed_s ?? 0)));
+      const reactive = s.audio_reactive ? "audio-reactive" : "static";
+      const preview = String(s.code ?? "").slice(0, 60).replace(/\s+/g, " ");
+      lines.push(`- ${s.sketch_id} ${s.size ?? "?"} @ ${s.position ?? "?"} (${age}s old, ${reactive}): ${preview}`);
+    }
+    lines.push("");
   }
 
   return lines.join("\n");
@@ -1760,6 +1858,73 @@ if (isDirectNodeExecution) {
     });
     assert.equal("reactivity" in s.elements.find((e) => e.element_id === id1), false);
     assert.equal("reactivity" in s.elements.find((e) => e.element_id === id2), false);
+  });
+
+  t("setP5Background mints sketch_id and populates state.p5_background", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r1 = setP5Background(s, { code: "function draw(){}", audio_reactive: true });
+    assert.equal(r1.sketch_id, "sketch_0001");
+    assert.equal(r1.retired_id, null);
+    assert.equal(s.p5_background.sketch_id, "sketch_0001");
+    assert.equal(s.p5_background.audio_reactive, true);
+  });
+
+  t("setP5Background replaces prior background and returns retired_id", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r1 = setP5Background(s, { code: "first", audio_reactive: false });
+    const r2 = setP5Background(s, { code: "second", audio_reactive: true });
+    assert.equal(r2.retired_id, r1.sketch_id);
+    assert.equal(s.p5_background.sketch_id, r2.sketch_id);
+  });
+
+  t("addP5SketchSlot appends localized sketch up to 3 without eviction", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r1 = addP5SketchSlot(s, { position: "top-left", size: "small", code: "a", audio_reactive: true });
+    const r2 = addP5SketchSlot(s, { position: "center", size: "medium", code: "b", audio_reactive: false });
+    const r3 = addP5SketchSlot(s, { position: "bottom-right", size: "large", code: "c", audio_reactive: true });
+    assert.equal(r1.retired_id, null);
+    assert.equal(r2.retired_id, null);
+    assert.equal(r3.retired_id, null);
+    assert.equal(s.p5_sketches.length, 3);
+  });
+
+  t("addP5SketchSlot evicts the oldest when the cap is hit (retired_id surfaces)", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r1 = addP5SketchSlot(s, { position: "top-left", size: "small", code: "a", audio_reactive: true });
+    addP5SketchSlot(s, { position: "center", size: "medium", code: "b", audio_reactive: false });
+    addP5SketchSlot(s, { position: "bottom-right", size: "large", code: "c", audio_reactive: true });
+    const r4 = addP5SketchSlot(s, { position: "mid-left", size: "small", code: "d", audio_reactive: false });
+    assert.equal(r4.retired_id, r1.sketch_id);
+    assert.equal(s.p5_sketches.length, 3);
+    assert.equal(s.p5_sketches[0].code, "b");
+    assert.equal(s.p5_sketches[2].code, "d");
+  });
+
+  t("retireP5Sketch removes from whichever slot holds it; returns slot or null", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const bg = setP5Background(s, { code: "bg", audio_reactive: true });
+    const loc = addP5SketchSlot(s, { position: "center", size: "small", code: "l", audio_reactive: false });
+    assert.equal(retireP5Sketch(s, bg.sketch_id), "background");
+    assert.equal(s.p5_background, null);
+    assert.equal(retireP5Sketch(s, loc.sketch_id), "localized");
+    assert.equal(s.p5_sketches.length, 0);
+    assert.equal(retireP5Sketch(s, "sketch_unknown"), null);
+  });
+
+  t("formatSummary renders a P5 SKETCHES block with counts and audio_reactive markers", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    setP5Background(s, { code: "function draw(){background(10);}", audio_reactive: true });
+    addP5SketchSlot(s, { position: "top-left", size: "small", code: "function setup(){}", audio_reactive: false });
+    const summary = formatSummary(s);
+    assert.match(summary, /P5 SKETCHES \[2 active\]/);
+    assert.match(summary, /sketch_0001 BACKGROUND .*audio-reactive/);
+    assert.match(summary, /sketch_0002 small @ top-left.*static/);
   });
 
   t("formatSummary marks reactive elements with a 'reactive: prop←feature' clause", () => {
