@@ -56,16 +56,15 @@ export function buildPacket({
   const userText = formatUserMessage(cleanCycle, sceneStateSummary);
 
   // When mood-board blocks are present, the cache breakpoint moves from the
-  // medium_rules text block to a trailing empty block *after* the mood-board
-  // images (that block ships inside moodBoardBlocks), so tools + all text
-  // blocks + mood-board images are cached together. When absent, preserve
-  // the prior placement so the existing 131 tests stay green.
+  // medium_rules text block to a trailing user-content text block *after* the
+  // mood-board images. That keeps tools + system text + static mood-board
+  // content cached while leaving the per-cycle user text outside the prefix.
+  // When absent, preserve the prior placement.
   const hasMoodBoard = Array.isArray(moodBoardBlocks) && moodBoardBlocks.length > 0;
   const system = hasMoodBoard
     ? [
         { type: "text", text: hijazBase },
         { type: "text", text: mediumRules },
-        ...moodBoardBlocks,
       ]
     : [
         { type: "text", text: hijazBase },
@@ -76,9 +75,14 @@ export function buildPacket({
         },
       ];
 
+  const hasSelfFrame = Array.isArray(selfFrameUserBlocks) && selfFrameUserBlocks.length > 0;
   const userContent =
-    Array.isArray(selfFrameUserBlocks) && selfFrameUserBlocks.length > 0
-      ? [{ type: "text", text: userText }, ...selfFrameUserBlocks]
+    hasMoodBoard || hasSelfFrame
+      ? [
+          ...(hasMoodBoard ? moodBoardBlocks : []),
+          { type: "text", text: userText },
+          ...(hasSelfFrame ? selfFrameUserBlocks : []),
+        ]
       : userText;
 
   return {
@@ -144,12 +148,12 @@ if (isDirectNodeExecution) {
     assert.equal(typeof packet.messages[0].content, "string");
   });
 
-  t("with mood board, buildPacket appends mood-board blocks and the breakpoint travels with them", () => {
+  t("with mood board, buildPacket puts mood-board blocks in user content before the dynamic cycle text", () => {
     const moodBoardBlocks = [
       { type: "text", text: "MOOD BOARD — ..." },
       { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
       { type: "image", source: { type: "base64", media_type: "image/png", data: "BBBB" } },
-      { type: "text", text: "", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "END MOOD BOARD.", cache_control: { type: "ephemeral" } },
     ];
     const packet = buildPacket({
       cycle: fakeCycle,
@@ -160,11 +164,16 @@ if (isDirectNodeExecution) {
       model: "m",
       moodBoardBlocks,
     });
-    assert.equal(packet.system.length, 2 + moodBoardBlocks.length);
+    assert.equal(packet.system.length, 2);
     assert.equal(packet.system[0].text, "BASE");
     assert.equal(packet.system[1].text, "RULES");
     assert.equal(packet.system[1].cache_control, undefined);
-    assert.deepEqual(packet.system.at(-1).cache_control, { type: "ephemeral" });
+    assert.equal(packet.system.every((block) => block.type === "text"), true);
+    assert.equal(Array.isArray(packet.messages[0].content), true);
+    assert.deepEqual(packet.messages[0].content.slice(0, moodBoardBlocks.length), moodBoardBlocks);
+    assert.deepEqual(packet.messages[0].content[moodBoardBlocks.length - 1].cache_control, { type: "ephemeral" });
+    assert.equal(packet.messages[0].content[moodBoardBlocks.length].type, "text");
+    assert.match(packet.messages[0].content[moodBoardBlocks.length].text, /cycle 3/);
   });
 
   t("with self-frame user blocks, messages[0].content becomes an array with user text first", () => {
@@ -199,15 +208,19 @@ if (isDirectNodeExecution) {
       moodBoardBlocks: [
         { type: "text", text: "MB" },
         { type: "image", source: { type: "base64", media_type: "image/png", data: "XX" } },
-        { type: "text", text: "", cache_control: { type: "ephemeral" } },
+        { type: "text", text: "END MOOD BOARD.", cache_control: { type: "ephemeral" } },
       ],
       selfFrameUserBlocks: [
         { type: "text", text: "Previous frame (cycle 2)" },
         { type: "image", source: { type: "base64", media_type: "image/png", data: "YY" } },
       ],
     });
-    assert.deepEqual(packet.system.at(-1).cache_control, { type: "ephemeral" });
-    assert.equal(packet.messages[0].content.length, 3);
+    assert.equal(packet.system.length, 2);
+    assert.equal(packet.system.every((block) => block.type === "text"), true);
+    assert.deepEqual(packet.messages[0].content[2].cache_control, { type: "ephemeral" });
+    assert.match(packet.messages[0].content[3].text, /cycle 3/);
+    assert.equal(packet.messages[0].content[4].text, "Previous frame (cycle 2)");
+    assert.equal(packet.messages[0].content[5].type, "image");
   });
 
   t("empty self-frame array keeps string content (no wrapping)", () => {
