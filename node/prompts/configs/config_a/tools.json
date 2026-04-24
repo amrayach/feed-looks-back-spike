@@ -71,7 +71,7 @@
         },
         "reactivity": {
           "type": "array",
-          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. SVG forms respond well to tahwil impulses (scale ring-outs) and hijaz_state gating. A sustained vertical line that pulses its scale on each tahwil is a signature Session I move.",
+          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. SVG forms respond well to tahwil impulses (scale ring-outs) and hijaz_state gating. Bind the reactivity to a depicted thing, not to a geometric primitive: a candle flame whose scale surges on each tahwil (curve: impulse), trembling leaves whose rotation jumps on each onset, breath rising from a sleeping figure whose translateY drifts with hijaz_intensity — these are the Session I signature moves.",
           "items": {
             "type": "object",
             "properties": {
