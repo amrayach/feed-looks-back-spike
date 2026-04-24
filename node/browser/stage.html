@@ -48,6 +48,7 @@
       import { createWsClient } from "/browser/ws_client.mjs";
       import { createFeatureBus } from "/browser/feature_bus.mjs";
       import { createFeatureReplayer } from "/browser/feature_replayer.mjs";
+      import { createBindingEngine } from "/browser/binding_engine.mjs";
 
       const bootstrap = loadBootstrap({ locationLike: window.location, documentLike: document });
       const mount = document.getElementById("stage-root");
@@ -62,10 +63,14 @@
       const bus = createFeatureBus();
       window.__featureBus = bus;
 
+      const bindingEngine = createBindingEngine({ bus });
+      window.__bindingEngine = bindingEngine;
+
       const reducer = createSceneReducer({
         documentLike: document,
         mount,
         readyTarget: document.body,
+        bindingEngine,
       });
 
       createWsClient({
