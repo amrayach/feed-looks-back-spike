@@ -143,7 +143,9 @@ Served statically by `stage_server.mjs` at the same port as the WebSocket endpoi
 - `/` → `node/browser/stage.html`
 - `/browser/*.mjs` → `node/browser/*.mjs`
 - `/shared/*.mjs` → `node/src/*.mjs` (narrow allowlist: `patch_protocol.mjs`, `binding_easing.mjs` — the two modules consumed by both Node and the browser). Serving only the allowlist avoids accidentally exposing `opus_client.mjs` or other Node-only code.
-- `/vendor/p5/p5.min.js` → read once from `node_modules/p5/lib/p5.min.js` at startup; cached in memory; served to any consumer. Used by stage_server when generating p5-iframe srcdoc (see §7.3) so sketches have no external-CDN dependency during performance.
+- `/vendor/p5/p5.min.js` → the checked-in vendored copy at `node/vendor/p5/p5.min.js` (v2.2.3, 963 KB, LGPL-2.1). Served as a static file with long-lived cache headers. The `/p5/sandbox` route's HTML shell references this path, so sketches have no external-CDN dependency during performance. Refresh procedure documented in `node/vendor/p5/README.md`.
+- `/p5/sandbox?sketch_id=<id>&slot=<background|localized>` → synthetic HTML shell for sketch iframes. Serves the `<script src="/vendor/p5/p5.min.js">` tag, the `<script src="/p5/bridge.js">` tag, and the per-run sketch code keyed by `sketch_id`. Response carries a strict HTTP `Content-Security-Policy` header (see §7.3). The iframe points at this URL via its `src` attribute.
+- `/p5/bridge.js` → the host↔iframe message-handling code served as a separate static asset so the CSP can limit script sources to `'self'`.
 - `/run/<run_id>/audio.wav` → `node/output/<run_id>/audio.wav` (pre-recorded mode source audio; file copied or symlinked into the run directory at run start)
 - `/run/<run_id>/features_track.json` → `node/output/<run_id>/features_track.json` (Python `stream_features.py --mode precompute` output; includes ALL features — amplitude, onset_strength, spectral_centroid, and Hijaz events)
 - `/image_cache/<filename>` → `node/image_cache/<filename>` (shared across runs; this is where `image_fetch.mjs` already writes — `DEFAULT_CACHE_DIR = join(NODE_ROOT, "image_cache")` at `image_fetch.mjs:9`; files named `<sha256-16>.jpg` per `image_fetch.mjs:92`). No per-run copy or symlink needed — `image_resolver.mjs` returns browser URLs in this shape directly, so `element.add` patches reference stable, deduplicated paths.
@@ -304,40 +306,48 @@ Dynamic reference: Opus sees its own previous rendered output at moments when co
 
 ### 7.3 Sandbox & safety
 
-Each sketch runs in an iframe whose `srcdoc` inlines the vendored p5 source + the user-authored sketch code + a feature-bridge listener. No external CDN is used; p5 is served locally (see §13.4 dependencies and §5.2 static paths).
+Each sketch runs in an iframe that loads from the synthetic `/p5/sandbox` route (see §5.2). The route returns an HTML shell with `<script src="/vendor/p5/p5.min.js">`, `<script src="/p5/bridge.js">`, and an inline `<script>` tag carrying the per-run sketch code for the requested `sketch_id`. The iframe references the route via its `src` attribute so the HTTP response's `Content-Security-Policy` header is what enforces the sandbox contract.
 
 ```html
 <iframe class="p5-sketch"
         sandbox="allow-scripts"
-        csp="default-src 'none'; script-src 'unsafe-inline'; img-src blob: data:;"
-        srcdoc="<!DOCTYPE html><html><body>
-                  <script><!-- p5.min.js content inlined by stage_server at mount --></script>
-                  <script><!-- user-authored p5 sketch code --></script>
-                  <script><!-- feature-bridge listener --></script>
-                </body></html>">
+        src="/p5/sandbox?sketch_id=sketch_0007&slot=localized">
+</iframe>
 ```
 
-**p5 vendoring.** p5 is an npm dependency (§13.4). At startup, stage_server reads `node_modules/p5/lib/p5.min.js` once, keeps it in memory, and inlines it into each sketch iframe's `srcdoc`. No network access is required at runtime, which is what makes `connect-src 'none'` viable.
+The `/p5/sandbox` response headers include:
+
+```
+Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval';
+                         connect-src 'none'; frame-src 'none'; object-src 'none';
+                         img-src blob: data:
+```
+
+`unsafe-eval` is present because p5 uses `new Function(...)` for user-provided code; it is safe inside an opaque-origin sandboxed iframe because the eval'd code runs with the same no-parent / no-network restrictions as the sketch itself.
+
+**p5 vendoring.** `p5` is listed as a dev dependency in `node/package.json` for editor tooling only. The served asset is the checked-in `node/vendor/p5/p5.min.js` (v2.2.3, 963 KB, LGPL-2.1). Refresh procedure — re-copying from the npm package after a version bump — is documented in `node/vendor/p5/README.md`. At runtime, stage_server serves the vendored file directly; no startup read of `node_modules` is performed.
+
+**Transport — MessageChannel (post Tier 6 R1).** The parent↔iframe messaging surface is a `MessageChannel`, not same-window `postMessage`. On iframe `load`, the host posts a single `{type:"port-handoff", sketch_id}` message with `targetOrigin="*"` and exactly one transferred `MessagePort` as the third argument. This is the only wildcard-target post in the entire sandbox flow; it is required because `sandbox="allow-scripts"` without `allow-same-origin` forces the iframe's document origin to be opaque, and `targetOrigin` cannot name opaque origins. The bridge validates the handshake (`event.source === window.parent` + message-shape Zod + exactly 1 transferred port) and then closes its window listener permanently. After handshake, every feature update, heartbeat, and error flows over the port — the port itself is the capability, so `targetOrigin` never re-appears.
 
 **Runtime guards:**
 - **No same-origin access.** Sandbox without `allow-same-origin` → iframe cannot read parent DOM, cookies, or storage.
-- **No network egress.** `connect-src 'none'` blocks fetch, WebSocket, XHR. Sketches get audio features through the postMessage bridge only.
-- **Heartbeat watchdog.** Iframe posts `{type:"heartbeat", frame_count, last_frame_time_ms}` every 500 ms. Parent kills the iframe on 2 s silence and emits a `sketch.retire` patch.
-- **postMessage validation.** Parent accepts only `{type: "heartbeat" | "error" | "ready", ...}` with zod schema validation; unknown message types dropped silently.
+- **No network egress.** `connect-src 'none'` blocks fetch, WebSocket, XHR. Sketches get audio features through the MessageChannel port only.
+- **Heartbeat watchdog.** Bridge posts `{type:"heartbeat", frame_count, last_frame_time_ms}` over the port every 500 ms. Parent kills the iframe on 2 s silence and emits a `sketch.retire` patch.
+- **Message validation.** Parent accepts only `{type: "heartbeat" | "error" | "ready", ...}` with zod schema validation on each port-message; unknown types dropped silently.
 - **Kill-and-replace.** Any error (load failure, script error, timeout) triggers removal without affecting other sketches or the parent stage. Errors logged to `operator_views` console for post-show review.
-- **N=3 enforced on both ends, eviction-on-overflow semantics (never rejection).** When Opus calls `addP5Sketch` and all 3 localized slots are full, Node emits a `sketch.retire` patch for the oldest localized sketch *before* applying the new `sketch.add`. The tool handler returns the new sketch_id to Opus in both cases (initial-3 and overflow-evict); no rejection path. Browser reducer enforces the same cap as belt-and-suspenders: if a 4th `sketch.add` arrives without a preceding `sketch.retire`, browser evicts the oldest locally and logs a warning to operator_views.
+- **N=3 enforced on both ends, eviction-on-overflow semantics (never rejection).** When Opus calls `addP5Sketch` and all 3 localized slots are full, Node emits a `sketch.retire` patch for the oldest localized sketch *before* applying the new `sketch.add`. The tool handler returns the new sketch_id to Opus in both cases (initial-3 and overflow-evict); no rejection path. Browser reducer enforces the same cap as belt-and-suspenders: if a 4th `sketch.add` arrives without a preceding `sketch.retire`, browser evicts the oldest locally and logs a warning to operator_views. Background replacement has the equivalent belt-and-suspenders in the reducer (Tier 6 R2): consecutive `sketch.background.set` with a different `sketch_id` retires the prior background locally, independent of whether a `sketch.retire` patch preceded.
 
-**Sketch access to features:**
+**Sketch access to features (via the bridge):**
 ```js
-// Injected into each iframe at mount:
+// /p5/bridge.js — loaded once per iframe; receives the MessagePort
+// on handshake and exposes features on window.features.
 window.features = {
   amplitude: 0, onset_strength: 0, spectral_centroid: 0,
-  hijaz_state: "unknown", hijaz_intensity: 0, hijaz_tahwil: false
+  hijaz_state: "unknown", hijaz_intensity: 0, hijaz_tahwil: false,
 };
-window.addEventListener("message", (e) => {
-  if (e.data?.type === "features") Object.assign(window.features, e.data.values);
-});
-// Parent posts {type: "features", values: {...}} every audio frame (~60 Hz).
+// Parent sends {type: "features", values: {...}} over the port every
+// audio frame (~60 Hz). The bridge writes into window.features so the
+// sketch's draw() loop reads live values synchronously.
 ```
 
 ---
@@ -570,7 +580,7 @@ python/
 - `ws` — WebSocket server (stage_server)
 - `playwright` — headless self-frame capture
 - `sharp` — mood-board image downscaling
-- `p5` — vendored locally. stage_server reads `node_modules/p5/lib/p5.min.js` once at startup and inlines it into each sketch iframe's srcdoc (see §7.3). No CDN dependency during performance; satisfies iframe `connect-src 'none'`.
+- `p5` — dev dependency only, used for editor tooling / type hints. The served asset is the checked-in `node/vendor/p5/p5.min.js` (v2.2.3, 963 KB, LGPL-2.1), loaded by the `/p5/sandbox` HTML shell via `<script src="/vendor/p5/p5.min.js">`. Refresh procedure — re-copy from the npm package after a version bump — lives in `node/vendor/p5/README.md`. No CDN dependency during performance; satisfies iframe `connect-src 'none'`.
 
 Python (in the existing `ambi_audio` conda env per memory):
 - `websockets` (WS client)
