@@ -68,6 +68,8 @@ function contentTypeFor(filePath) {
     case ".mjs":
     case ".js":
       return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
     case ".json":
       return "application/json; charset=utf-8";
     case ".wav":
@@ -160,6 +162,13 @@ export async function createStageServer({
 
       if (url.pathname === "/") {
         filePath = join(browserRoot, "stage.html");
+      } else if (url.pathname === "/hud") {
+        // Code-stream HUD. Loads the feed UI; the page itself reads
+        // ?run_id=...&mode=posthoc|live and pulls data either from
+        // /run/<id>/run_summary.json (posthoc) or the stage WebSocket
+        // (live). Served from the same origin as stage.html so the HUD
+        // has no new cross-origin or permissions surface.
+        filePath = join(browserRoot, "hud.html");
       } else if (url.pathname === "/p5/bridge.js") {
         filePath = join(browserRoot, "p5_bridge.js");
       } else if (url.pathname.startsWith("/browser/")) {
@@ -180,7 +189,7 @@ export async function createStageServer({
         // the contract — see node/vendor/p5/README.md for refresh steps.
         filePath = join(nodeRoot, "vendor", "p5", "p5.min.js");
       } else {
-        const runMatch = /^\/run\/([^/]+)\/(audio\.wav|features_track\.json)$/.exec(url.pathname);
+        const runMatch = /^\/run\/([^/]+)\/(audio\.wav|features_track\.json|run_summary\.json)$/.exec(url.pathname);
         if (runMatch) {
           filePath = join(outputRoot, `run_${runMatch[1]}`, runMatch[2]);
         } else if (url.pathname.startsWith("/image_cache/")) {
@@ -463,6 +472,10 @@ if (isDirectNodeExecution) {
   function freshNodeRoot(prefix) {
     const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
     write(join(root, "browser", "stage.html"), "<!doctype html><html><body>stage</body></html>");
+    write(join(root, "browser", "hud.html"), "<!doctype html><html><body>hud FLB_HUD_MARKER</body></html>");
+    write(join(root, "browser", "hud.css"), "/* FLB_HUD_CSS_MARKER */\n");
+    write(join(root, "browser", "hud.mjs"), "// FLB_HUD_JS_MARKER\n");
+    write(join(root, "browser", "hud_parser.mjs"), "export const hud = true;\n");
     write(join(root, "browser", "bootstrap.mjs"), "export const ok = true;\n");
     write(join(root, "browser", "p5_bridge.js"), "// fake p5_bridge.js content — FLB_BRIDGE_MARKER\n");
     write(join(root, "src", "patch_protocol.mjs"), "export const ok = true;\n");
@@ -1034,6 +1047,59 @@ if (isDirectNodeExecution) {
       assert.equal(parsed.frames.length, 2);
       assert.equal(parsed.frames[1].hijaz_state, "approach");
       assert.equal(parsed.frames[1].hijaz_tahwil, true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("/hud serves the HUD shell and /run/<id>/run_summary.json is exposed", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-hud");
+    const runDir = join(nodeRoot, "output", "run_hudtest");
+    mkdirSync(runDir, { recursive: true });
+    // The HUD route is the only route that exposes run_summary.json to
+    // the browser. If this test breaks, the post-hoc replay path is broken.
+    const fakeSummary = {
+      run_id: "hudtest",
+      config: "config_a",
+      model: "claude-opus-4-7",
+      mode: "precompute",
+      cycles_total: 1,
+      per_cycle: [
+        {
+          cycle_index: 0,
+          cycle_id: "cycle_000",
+          elapsed_s: 0.5,
+          status: "ok",
+          tool_calls: [{ name: "setBackground", input: { css_background: "#000" } }],
+        },
+      ],
+    };
+    write(join(runDir, "run_summary.json"), JSON.stringify(fakeSummary));
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "hudtest", mode: "precompute", runDir });
+      const hud = await requestText(`http://${server.host}:${server.port}/hud`);
+      const hudJs = await requestText(`http://${server.host}:${server.port}/browser/hud.mjs`);
+      const hudCss = await requestText(`http://${server.host}:${server.port}/browser/hud.css`);
+      const summary = await requestText(
+        `http://${server.host}:${server.port}/run/hudtest/run_summary.json`,
+      );
+      assert.equal(hud.status, 200);
+      assert.match(hud.body, /FLB_HUD_MARKER/);
+      assert.equal(hudJs.status, 200);
+      assert.match(hudJs.body, /FLB_HUD_JS_MARKER/);
+      assert.match(hudJs.headers["content-type"] ?? "", /javascript/);
+      assert.equal(hudCss.status, 200);
+      assert.match(hudCss.body, /FLB_HUD_CSS_MARKER/);
+      // Guard against regressing to octet-stream — browsers refuse a
+      // stylesheet without a text/css content-type, which silently
+      // flattens the HUD to Times New Roman on a white background.
+      assert.match(hudCss.headers["content-type"] ?? "", /text\/css/);
+      assert.equal(summary.status, 200);
+      assert.match(summary.headers["content-type"] ?? "", /json/);
+      const parsed = JSON.parse(summary.body);
+      assert.equal(parsed.run_id, "hudtest");
+      assert.equal(parsed.per_cycle[0].tool_calls[0].name, "setBackground");
     } finally {
       await server.close();
     }
