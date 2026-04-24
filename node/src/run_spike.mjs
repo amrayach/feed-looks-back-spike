@@ -785,8 +785,8 @@ async function run(options) {
       `run_id=${runId} config=${configName} model=${model} cycles=${cycles.length} mode=${mode}\n`,
     );
     process.stdout.write(`output: ${runDir}\n`);
-    process.stdout.write(`stage: ${operatorUrl}\n`);
-    process.stdout.write(`show: ${showUrl}\n`);
+    process.stdout.write(`show (stage + HUD): ${showUrl}\n`);
+    process.stdout.write(`stage only: ${operatorUrl}\n`);
 
     const state = createInitialState();
 
@@ -1058,8 +1058,8 @@ async function run(options) {
         `Tool calls total: ${summary.totals.tool_calls} (${summary.totals.cycles_with_tool_calls} cycles with calls, ${summary.totals.cycles_silent} silent)\n` +
         (mode === "real" ? `Cost total: $${summary.totals.cost.toFixed(4)}\n` : "") +
         `Run dir: ${runDir}\n` +
-        `Stage: ${operatorUrl}\n` +
-        `Show: ${showUrl}\n` +
+        `Show (stage + HUD): ${showUrl}\n` +
+        `Stage only: ${operatorUrl}\n` +
         (liveHtmlPath ? `Live monitor: ${liveHtmlPath}\n` : "") +
         (summaryWriteErr ? `Run summary write failed: ${summaryWriteErr.message}\n` : "") +
         (finalHtmlPath ? `Final HTML: ${finalHtmlPath}\n` : ""),
