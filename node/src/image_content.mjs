@@ -125,12 +125,12 @@ export async function loadMoodBoard({
   };
 }
 
-export function buildMoodBoardSystemBlocks({ labelText, imageBlocks }) {
+export function buildMoodBoardUserBlocks({ labelText, imageBlocks }) {
   if (!imageBlocks || imageBlocks.length === 0) return [];
   return [
     { type: "text", text: labelText },
     ...imageBlocks,
-    { type: "text", text: "", cache_control: { type: "ephemeral" } },
+    { type: "text", text: "END MOOD BOARD.", cache_control: { type: "ephemeral" } },
   ];
 }
 
@@ -243,19 +243,20 @@ if (isDirectNodeExecution) {
     }
   });
 
-  await t("buildMoodBoardSystemBlocks appends cache breakpoint after images", async () => {
+  await t("buildMoodBoardUserBlocks appends cache breakpoint after images", async () => {
     const result = await loadMoodBoard();
-    const blocks = buildMoodBoardSystemBlocks(result);
+    const blocks = buildMoodBoardUserBlocks(result);
     assert.equal(blocks.length, 1 + 5 + 1);
     assert.equal(blocks[0].type, "text");
     assert.equal(blocks[6].type, "text");
+    assert.equal(blocks[6].text.length > 0, true);
     assert.deepEqual(blocks[6].cache_control, { type: "ephemeral" });
     for (let i = 1; i <= 5; i += 1) assert.equal(blocks[i].type, "image");
   });
 
-  await t("buildMoodBoardSystemBlocks returns [] when no image blocks", () => {
-    assert.deepEqual(buildMoodBoardSystemBlocks({ labelText: "", imageBlocks: [] }), []);
-    assert.deepEqual(buildMoodBoardSystemBlocks({ labelText: "x", imageBlocks: null }), []);
+  await t("buildMoodBoardUserBlocks returns [] when no image blocks", () => {
+    assert.deepEqual(buildMoodBoardUserBlocks({ labelText: "", imageBlocks: [] }), []);
+    assert.deepEqual(buildMoodBoardUserBlocks({ labelText: "x", imageBlocks: null }), []);
   });
 
   await t("shouldCaptureSelfFrame fires every 5th cycle as safety baseline", () => {

@@ -20,7 +20,7 @@ import { renderFinalHtml, renderLiveHtml } from "./operator_views.mjs";
 import { createStageServer } from "./stage_server.mjs";
 import {
   loadMoodBoard,
-  buildMoodBoardSystemBlocks,
+  buildMoodBoardUserBlocks,
   shouldCaptureSelfFrame,
   buildSelfFrameUserBlocks,
 } from "./image_content.mjs";
@@ -721,7 +721,7 @@ async function run(options) {
   let moodBoardBlocks = [];
   try {
     const moodBoard = await loadMoodBoardImpl();
-    moodBoardBlocks = buildMoodBoardSystemBlocks(moodBoard);
+    moodBoardBlocks = buildMoodBoardUserBlocks(moodBoard);
     if (moodBoardBlocks.length > 0) {
       process.stdout.write(`Mood board loaded: ${moodBoard.imageBlocks.length} images.\n`);
     }
@@ -1576,6 +1576,7 @@ async function runSelfTests() {
       sleepImpl: async () => {},
       createStageServerImpl: async () => makeStageServerStub(),
       createSelfFrameCapturerImpl: () => mockCapturer,
+      loadMoodBoardImpl: async () => ({ labelText: "", imageBlocks: [] }),
     });
 
     // With 6 silent cycles (no image element.adds): cyclesSinceLastImage increments
