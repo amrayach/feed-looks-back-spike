@@ -6,6 +6,31 @@ import {
   DEFAULT_LIFETIMES,
 } from "./scene_state.mjs";
 import { emitPatchesForToolResult } from "./patch_emitter.mjs";
+import { ReactivitySchema } from "./patch_protocol.mjs";
+
+// Accept either a single binding object or an array. Returns
+// {ok: true, normalized: Reactivity[] | null} on success, or
+// {error: "..."} on the first invalid binding. Normalized is null
+// when the caller omitted reactivity (distinct from an empty array,
+// which is legal and normalized to null here since an element with
+// zero bindings is semantically the same as one with no reactivity).
+function validateReactivity(raw) {
+  if (raw === undefined || raw === null) return { ok: true, normalized: null };
+  const arr = Array.isArray(raw) ? raw : [raw];
+  if (arr.length === 0) return { ok: true, normalized: null };
+  const normalized = [];
+  for (let i = 0; i < arr.length; i++) {
+    const parsed = ReactivitySchema.safeParse(arr[i]);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+        .join("; ");
+      return { error: `reactivity[${i}] invalid: ${issues}` };
+    }
+    normalized.push(parsed.data);
+  }
+  return { ok: true, normalized };
+}
 
 function requireString(input, field) {
   const v = input[field];
@@ -23,10 +48,13 @@ function handleAddText(state, input) {
     const err = requireString(input, field);
     if (err) return err;
   }
+  const reactivity = validateReactivity(input.reactivity);
+  if (reactivity.error) return { error: reactivity.error };
   const id = addElement(state, {
     type: "text",
     content: { content: input.content, position: input.position, style: input.style },
     lifetime_s: input.lifetime_s ?? null,
+    reactivity: reactivity.normalized,
   });
   return { element_id: id };
 }
@@ -36,6 +64,8 @@ function handleAddSVG(state, input) {
     const err = requireString(input, field);
     if (err) return err;
   }
+  const reactivity = validateReactivity(input.reactivity);
+  if (reactivity.error) return { error: reactivity.error };
   const id = addElement(state, {
     type: "svg",
     content: {
@@ -44,6 +74,7 @@ function handleAddSVG(state, input) {
       semantic_label: input.semantic_label,
     },
     lifetime_s: input.lifetime_s,
+    reactivity: reactivity.normalized,
   });
   return { element_id: id };
 }
@@ -53,10 +84,13 @@ function handleAddImage(state, input) {
     const err = requireString(input, field);
     if (err) return err;
   }
+  const reactivity = validateReactivity(input.reactivity);
+  if (reactivity.error) return { error: reactivity.error };
   const id = addElement(state, {
     type: "image",
     content: { query: input.query, position: input.position },
     lifetime_s: input.lifetime_s ?? null,
+    reactivity: reactivity.normalized,
   });
   return { element_id: id };
 }
@@ -103,7 +137,9 @@ function validateCompositeElement(el, index) {
   if (el.type === "image" && typeof el.query !== "string") {
     return { error: `${prefix}: missing required field 'query'` };
   }
-  return null;
+  const reactivity = validateReactivity(el.reactivity);
+  if (reactivity.error) return { error: `${prefix}: ${reactivity.error}` };
+  return { ok: true, reactivity: reactivity.normalized };
 }
 
 function handleAddCompositeScene(state, input) {
@@ -117,10 +153,14 @@ function handleAddCompositeScene(state, input) {
   if (labelErr) return labelErr;
 
   // Atomic validation pass — if any element is invalid the whole composite
-  // is rejected before any state mutation.
+  // is rejected before any state mutation. validateCompositeElement also
+  // normalizes each member's reactivity; capture those results here so the
+  // mutation pass below doesn't need to re-validate.
+  const perMemberReactivity = [];
   for (let i = 0; i < input.elements.length; i += 1) {
-    const err = validateCompositeElement(input.elements[i], i);
-    if (err) return err;
+    const result = validateCompositeElement(input.elements[i], i);
+    if (result.error) return { error: result.error };
+    perMemberReactivity.push(result.reactivity);
   }
 
   // Shared lifetime: explicit numeric value wins; otherwise if any member's
@@ -139,7 +179,8 @@ function handleAddCompositeScene(state, input) {
   const groupId = addCompositionGroup(state, { group_label: input.group_label });
 
   const elementIds = [];
-  for (const el of input.elements) {
+  for (let i = 0; i < input.elements.length; i += 1) {
+    const el = input.elements[i];
     let content;
     if (el.type === "text") {
       content = {
@@ -166,6 +207,7 @@ function handleAddCompositeScene(state, input) {
       type: el.type,
       content,
       lifetime_s: sharedLifetime,
+      reactivity: perMemberReactivity[i],
     });
     elementIds.push(id);
   }
@@ -733,6 +775,172 @@ if (isDirectNodeExecution) {
     fail++;
     process.stdout.write(`  FAIL applyToolCallDetailed returns the legacy result and a patch list\n    ${err.message}\n`);
   }
+
+  t("applyToolCall addText accepts a single reactivity object (normalized to array)", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r1",
+      name: "addText",
+      input: {
+        content: "pulse",
+        position: "center",
+        style: "serif",
+        reactivity: {
+          property: "opacity",
+          feature: "amplitude",
+          map: { in: [0, 1], out: [0.5, 1.0], curve: "linear" },
+        },
+      },
+    });
+    assert.equal(r.element_id, "elem_0001");
+    const stored = s.elements.find((e) => e.element_id === "elem_0001");
+    assert.equal(Array.isArray(stored.reactivity), true);
+    assert.equal(stored.reactivity.length, 1);
+    assert.equal(stored.reactivity[0].property, "opacity");
+  });
+
+  t("applyToolCall addText accepts an array of reactivity bindings", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r2",
+      name: "addText",
+      input: {
+        content: "twin",
+        position: "center",
+        style: "serif",
+        reactivity: [
+          { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0, 1], curve: "linear" } },
+          { property: "scale", feature: "onset_strength", map: { in: [0, 1], out: [1, 1.2], curve: "impulse" }, smoothing_ms: 80 },
+        ],
+      },
+    });
+    assert.equal(r.element_id, "elem_0001");
+    const stored = s.elements.find((e) => e.element_id === "elem_0001");
+    assert.equal(stored.reactivity.length, 2);
+    assert.equal(stored.reactivity[1].smoothing_ms, 80);
+  });
+
+  t("applyToolCall addText rejects invalid reactivity and does not mutate state", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r3",
+      name: "addText",
+      input: {
+        content: "broken",
+        position: "center",
+        style: "serif",
+        reactivity: {
+          property: "opacity",
+          feature: "cowbell", // invalid feature
+          map: { in: [0, 1], out: [0, 1], curve: "linear" },
+        },
+      },
+    });
+    assert.match(r.error, /reactivity/i);
+    assert.equal(s.elements.length, 0);
+  });
+
+  t("applyToolCall addSVG and addImage accept reactivity", () => {
+    const s1 = freshState();
+    const rSvg = applyToolCall(s1, {
+      type: "tool_use",
+      id: "toolu_r4",
+      name: "addSVG",
+      input: {
+        svg_markup: "<svg viewBox='0 0 100 100'><circle cx='50' cy='50' r='30'/></svg>",
+        position: "center",
+        semantic_label: "ring",
+        reactivity: [
+          { property: "scale", feature: "hijaz_tahwil", map: { in: [0, 1], out: [1, 1.6], curve: "impulse" } },
+        ],
+      },
+    });
+    assert.equal(rSvg.element_id, "elem_0001");
+    assert.equal(s1.elements[0].reactivity[0].feature, "hijaz_tahwil");
+
+    const s2 = freshState();
+    const rImg = applyToolCall(s2, {
+      type: "tool_use",
+      id: "toolu_r5",
+      name: "addImage",
+      input: {
+        query: "stone wall in low sun",
+        position: "background",
+        reactivity: [
+          { property: "color_hue", feature: "hijaz_intensity", map: { in: [0, 1], out: [-8, 8], curve: "ease-in" }, smoothing_ms: 2000 },
+        ],
+      },
+    });
+    assert.equal(rImg.element_id, "elem_0001");
+    assert.equal(s2.elements[0].reactivity[0].property, "color_hue");
+  });
+
+  t("applyToolCall addCompositeScene accepts per-member reactivity (mixed with and without)", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r6",
+      name: "addCompositeScene",
+      input: {
+        group_label: "climax response",
+        elements: [
+          {
+            type: "text",
+            content: "now",
+            position: "center",
+            reactivity: [
+              { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0.5, 1], curve: "linear" } },
+            ],
+          },
+          {
+            type: "svg",
+            svg_markup: "<svg viewBox='0 0 100 100'><line x1='0' y1='50' x2='100' y2='50'/></svg>",
+            semantic_label: "horizon",
+            position: "horizontal band at mid-height",
+          },
+        ],
+      },
+    });
+    assert.equal(Array.isArray(r.element_ids), true);
+    assert.equal(r.element_ids.length, 2);
+    const first = s.elements.find((e) => e.element_id === r.element_ids[0]);
+    const second = s.elements.find((e) => e.element_id === r.element_ids[1]);
+    assert.equal(first.reactivity?.[0].property, "opacity");
+    assert.equal("reactivity" in second, false);
+  });
+
+  t("applyToolCall addCompositeScene rejects when any member has invalid reactivity (atomic)", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r7",
+      name: "addCompositeScene",
+      input: {
+        group_label: "doomed",
+        elements: [
+          {
+            type: "text",
+            content: "ok",
+            position: "center",
+          },
+          {
+            type: "text",
+            content: "broken",
+            position: "lower-left",
+            reactivity: [
+              { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0, 1], curve: "nonexistent" } },
+            ],
+          },
+        ],
+      },
+    });
+    assert.match(r.error, /composite element 1|reactivity/i);
+    assert.equal(s.elements.length, 0, "atomic failure — no members added");
+    assert.equal(Object.keys(s.composition_groups).length, 0, "no group minted");
+  });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
   if (fail > 0) process.exit(1);
