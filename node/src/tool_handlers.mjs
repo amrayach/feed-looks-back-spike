@@ -899,6 +899,111 @@ if (isDirectNodeExecution) {
     assert.equal(s.elements.length, 0);
   });
 
+  t("applyToolCall addText rejects reactivity with unknown top-level key (strict)", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r3s1",
+      name: "addText",
+      input: {
+        content: "strict-extra-key",
+        position: "center",
+        style: "serif",
+        reactivity: {
+          property: "opacity",
+          feature: "amplitude",
+          map: { in: [0, 1], out: [0, 1], curve: "linear" },
+          secret_knob: 42, // strict() should reject
+        },
+      },
+    });
+    assert.match(r.error, /reactivity/i);
+    assert.equal(s.elements.length, 0);
+  });
+
+  t("applyToolCall addText rejects reactivity with unknown map sub-key (strict)", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r3s2",
+      name: "addText",
+      input: {
+        content: "strict-map-key",
+        position: "center",
+        style: "serif",
+        reactivity: {
+          property: "opacity",
+          feature: "amplitude",
+          map: { in: [0, 1], out: [0, 1], curve: "linear", domain: "time" },
+        },
+      },
+    });
+    assert.match(r.error, /reactivity/i);
+    assert.equal(s.elements.length, 0);
+  });
+
+  t("applyToolCall addText rejects reactivity with negative smoothing_ms", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r3s3",
+      name: "addText",
+      input: {
+        content: "negative-smoothing",
+        position: "center",
+        style: "serif",
+        reactivity: {
+          property: "opacity",
+          feature: "amplitude",
+          map: { in: [0, 1], out: [0, 1], curve: "linear" },
+          smoothing_ms: -10,
+        },
+      },
+    });
+    assert.match(r.error, /reactivity/i);
+    assert.equal(s.elements.length, 0);
+  });
+
+  t("applyToolCall addText rejects reactivity with non-finite numbers (Infinity/NaN)", () => {
+    for (const bad of [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NaN]) {
+      const s = freshState();
+      const r = applyToolCall(s, {
+        type: "tool_use",
+        id: "toolu_r3s4",
+        name: "addText",
+        input: {
+          content: "non-finite-map",
+          position: "center",
+          style: "serif",
+          reactivity: {
+            property: "opacity",
+            feature: "amplitude",
+            map: { in: [0, bad], out: [0, 1], curve: "linear" },
+          },
+        },
+      });
+      assert.match(r.error, /reactivity/i, `expected rejection for ${bad}`);
+      assert.equal(s.elements.length, 0);
+    }
+  });
+
+  t("applyToolCall addText rejects reactivity whose value is not an object", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use",
+      id: "toolu_r3s5",
+      name: "addText",
+      input: {
+        content: "non-object",
+        position: "center",
+        style: "serif",
+        reactivity: "opacity=amplitude",
+      },
+    });
+    assert.match(r.error, /reactivity/i);
+    assert.equal(s.elements.length, 0);
+  });
+
   t("applyToolCall addSVG and addImage accept reactivity", () => {
     const s1 = freshState();
     const rSvg = applyToolCall(s1, {
