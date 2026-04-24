@@ -134,7 +134,7 @@ export function addCompositionGroup(state, { group_label }) {
 
 export const GROUP_ID_PATTERN = /^group_\d{4}$/;
 
-export function addElement(state, { type, content, lifetime_s }) {
+export function addElement(state, { type, content, lifetime_s, reactivity = null }) {
   const resolvedLifetime =
     lifetime_s === null
       ? null
@@ -143,7 +143,7 @@ export function addElement(state, { type, content, lifetime_s }) {
       : DEFAULT_LIFETIMES[type];
   const createdAt = state.current_elapsed_s;
   const id = mintElementId(state);
-  state.elements.push({
+  const element = {
     element_id: id,
     type,
     created_at_cycle: state.current_cycle_index,
@@ -152,7 +152,14 @@ export function addElement(state, { type, content, lifetime_s }) {
     fades_at_elapsed_s: resolvedLifetime === null ? null : createdAt + resolvedLifetime,
     faded: false,
     content,
-  });
+  };
+  // Only attach reactivity when non-empty so elements without bindings
+  // stay byte-for-byte identical to the pre-Phase-4 shape (keeps existing
+  // snapshotCycle JSON stable for anyone diffing the output directory).
+  if (Array.isArray(reactivity) && reactivity.length > 0) {
+    element.reactivity = reactivity;
+  }
+  state.elements.push(element);
   if (!content?.composition_group_id) recordActivity(state, "placed", 1);
   return id;
 }
@@ -232,11 +239,21 @@ function truncateMarkup(markup) {
   return markup.slice(0, SVG_MARKUP_MAX_SUMMARY_CHARS) + "...";
 }
 
+function formatReactivityMarker(el) {
+  if (!Array.isArray(el.reactivity) || el.reactivity.length === 0) return null;
+  const bindings = el.reactivity
+    .map((r) => `${r.property}←${r.feature}`)
+    .join(", ");
+  return `reactive: ${bindings}`;
+}
+
 function buildMetaClause(el, currentElapsedS, trailing) {
   const parts = [`${ageOf(el, currentElapsedS)}s old`];
   if (isFadingNextCycle(el, currentElapsedS)) parts.push("fading next cycle");
   parts.push(`position "${el.content.position}"`);
   if (trailing) parts.push(trailing);
+  const reactive = formatReactivityMarker(el);
+  if (reactive) parts.push(reactive);
   return `(${parts.join(", ")})`;
 }
 
@@ -262,6 +279,8 @@ function formatCompositeMemberLines(el, currentElapsedS) {
   const posParts = [`${ageOf(el, currentElapsedS)}s old`];
   if (isFadingNextCycle(el, currentElapsedS)) posParts.push("fading next cycle");
   posParts.push(`position "${el.content.position}"`);
+  const reactive = formatReactivityMarker(el);
+  if (reactive) posParts.push(reactive);
   const meta = `(${posParts.join(", ")})`;
   if (el.type === "text") {
     return [`  - ${el.element_id} TEXT ${meta}: "${el.content.content}"`];
@@ -1696,6 +1715,66 @@ if (isDirectNodeExecution) {
     assert.ok(!GROUP_ID_PATTERN.test("elem_0001"));
     assert.ok(!GROUP_ID_PATTERN.test("group_001"));
     assert.ok(!GROUP_ID_PATTERN.test("group_00001"));
+  });
+
+  t("addElement accepts reactivity and stores it on the element top-level", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const reactivity = [
+      { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0.5, 1.0], curve: "linear" } },
+    ];
+    const id = addElement(s, {
+      type: "text",
+      content: { content: "after", position: "lower-left", style: "serif" },
+      lifetime_s: null,
+      reactivity,
+    });
+    const stored = s.elements.find((e) => e.element_id === id);
+    assert.deepEqual(stored.reactivity, reactivity);
+  });
+
+  t("addElement without reactivity does not attach a reactivity key (shape-stable)", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const id = addElement(s, {
+      type: "text",
+      content: { content: "plain", position: "center", style: "serif" },
+      lifetime_s: null,
+    });
+    const stored = s.elements.find((e) => e.element_id === id);
+    assert.equal("reactivity" in stored, false);
+  });
+
+  t("addElement ignores empty or non-array reactivity values", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const id1 = addElement(s, {
+      type: "text",
+      content: { content: "a", position: "center", style: "serif" },
+      reactivity: [],
+    });
+    const id2 = addElement(s, {
+      type: "text",
+      content: { content: "b", position: "center", style: "serif" },
+      reactivity: "nonsense",
+    });
+    assert.equal("reactivity" in s.elements.find((e) => e.element_id === id1), false);
+    assert.equal("reactivity" in s.elements.find((e) => e.element_id === id2), false);
+  });
+
+  t("formatSummary marks reactive elements with a 'reactive: prop←feature' clause", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    addElement(s, {
+      type: "text",
+      content: { content: "pulse", position: "center", style: "serif" },
+      reactivity: [
+        { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0.5, 1], curve: "linear" } },
+        { property: "scale", feature: "onset_strength", map: { in: [0, 1], out: [1, 1.2], curve: "impulse" } },
+      ],
+    });
+    const summary = formatSummary(s);
+    assert.match(summary, /reactive: opacity←amplitude, scale←onset_strength/);
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
