@@ -9,6 +9,61 @@ import { WebSocketServer } from "ws";
 import { createPatchCache } from "./patch_cache.mjs";
 import { WsMessageSchema } from "./patch_protocol.mjs";
 
+// Server-enforced CSP for the p5 sandbox HTML. Attribute-only CSP on
+// the iframe tag is not a strong boundary (browser support is partial),
+// so we serve the iframe from a real route and set the header here. The
+// iframe sandbox has allow-scripts WITHOUT allow-same-origin, so the
+// opaque origin + CSP + watchdog form triple-redundant isolation around
+// the Opus-authored p5 code.
+const SANDBOX_CSP_HEADER = [
+  "default-src 'none'",
+  "connect-src 'none'",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "img-src 'self' data: blob:",
+  "style-src 'unsafe-inline'",
+  "script-src 'self' 'unsafe-eval'",
+].join("; ");
+
+// Fixed slot key used by sketch.background.set until the patch schema
+// carries sketch_id directly (Fix 6). Localized sketches key by the
+// patch's sketch_id field; the background slot always resolves to this
+// fixed key so the URL the iframe fetches is deterministic.
+const BG_SKETCH_KEY = "__background__";
+
+const VALID_SANDBOX_SLOTS = new Set(["background", "localized"]);
+
+// Escape a string so it is safe to embed inside <script type="application/json">.
+// JSON inside a script element is inert under our CSP (not executed),
+// but the tokenizer still treats </script> greedily — replace angle
+// brackets, ampersands, and line separators to be safe.
+function jsonScriptEscape(str) {
+  return JSON.stringify(str)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function sandboxHtml({ codeJson }) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>html,body{margin:0;padding:0;overflow:hidden;background:transparent;}canvas{display:block;}</style>
+</head>
+<body>
+<script type="application/json" id="flb-sketch-code">${codeJson}</script>
+<script src="/vendor/p5/p5.min.js"></script>
+<script src="/p5/bridge.js"></script>
+</body>
+</html>
+`;
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_NODE_ROOT = resolve(__dirname, "..");
 
@@ -69,14 +124,51 @@ export async function createStageServer({
   let lastLifecyclePatch = null;
   let featureProducerToken = null;
   const clientMeta = new Map();
+  // Per-run map of {sketch_id (or BG_SKETCH_KEY) -> {code, slot}}.
+  // Populated when sketch.add / sketch.background.set patches pass
+  // through broadcastPatch; consumed by the /p5/sandbox route when an
+  // iframe requests its HTML. Cleared on setCurrentRunContext so runs
+  // cannot leak p5 source into each other.
+  const sketchCodes = new Map();
+
+  function serveSandboxHtml(res, url) {
+    const sketchId = url.searchParams.get("sketch_id");
+    const slot = url.searchParams.get("slot");
+    if (!sketchId || !slot) {
+      res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      res.end("missing required query params: sketch_id, slot");
+      return;
+    }
+    if (!VALID_SANDBOX_SLOTS.has(slot)) {
+      res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      res.end("invalid slot");
+      return;
+    }
+    const registered = sketchCodes.get(sketchId);
+    const code = registered ? registered.code : "";
+    const html = sandboxHtml({ codeJson: jsonScriptEscape(code) });
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": SANDBOX_CSP_HEADER,
+    });
+    res.end(html);
+  }
 
   const server = createServer((req, res) => {
     try {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      if (url.pathname === "/p5/sandbox") {
+        serveSandboxHtml(res, url);
+        return;
+      }
+
       let filePath = null;
 
       if (url.pathname === "/") {
         filePath = join(browserRoot, "stage.html");
+      } else if (url.pathname === "/p5/bridge.js") {
+        filePath = join(browserRoot, "p5_bridge.js");
       } else if (url.pathname.startsWith("/browser/")) {
         filePath = safeResolve(browserRoot, url.pathname.slice("/browser/".length));
       } else if (url.pathname === "/shared/patch_protocol.mjs") {
@@ -248,6 +340,7 @@ export async function createStageServer({
       patchCache = createPatchCache({ persistPath: join(runDir, "patch_cache.json") });
       lastLifecyclePatch = null;
       featureProducerToken = randomBytes(16).toString("hex");
+      sketchCodes.clear();
       await patchCache.load();
       for (const ws of clientMeta.keys()) {
         try {
@@ -268,6 +361,20 @@ export async function createStageServer({
       }
       if (patch?.type === "cycle.begin" || patch?.type === "cycle.end") {
         lastLifecyclePatch = structuredClone(patch);
+      }
+      // Register sketch code in the per-run map BEFORE broadcasting so
+      // by the time the browser mounts the iframe and requests
+      // /p5/sandbox?sketch_id=..., the code is already there. For
+      // sketch.add the patch carries its own sketch_id; for background
+      // we key by BG_SKETCH_KEY until Fix 6 adds sketch_id to the
+      // background patch schema. sketch.retire drops the entry so
+      // stale code doesn't accumulate across a run.
+      if (patch?.type === "sketch.add" && typeof patch.sketch_id === "string") {
+        sketchCodes.set(patch.sketch_id, { code: String(patch.code ?? ""), slot: "localized" });
+      } else if (patch?.type === "sketch.background.set") {
+        sketchCodes.set(BG_SKETCH_KEY, { code: String(patch.code ?? ""), slot: "background" });
+      } else if (patch?.type === "sketch.retire" && typeof patch.sketch_id === "string") {
+        sketchCodes.delete(patch.sketch_id);
       }
       await patchCache.apply(patch);
       for (const [ws, meta] of clientMeta.entries()) {
@@ -337,7 +444,9 @@ if (isDirectNodeExecution) {
         res.on("data", (chunk) => {
           body += chunk;
         });
-        res.on("end", () => resolvePromise({ status: res.statusCode, body }));
+        res.on("end", () =>
+          resolvePromise({ status: res.statusCode, body, headers: res.headers }),
+        );
       }).on("error", rejectPromise);
     });
   }
@@ -358,6 +467,7 @@ if (isDirectNodeExecution) {
     const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
     write(join(root, "browser", "stage.html"), "<!doctype html><html><body>stage</body></html>");
     write(join(root, "browser", "bootstrap.mjs"), "export const ok = true;\n");
+    write(join(root, "browser", "p5_bridge.js"), "// fake p5_bridge.js content — FLB_BRIDGE_MARKER\n");
     write(join(root, "src", "patch_protocol.mjs"), "export const ok = true;\n");
     write(join(root, "src", "scene_layout.mjs"), "export const ok = true;\n");
     write(join(root, "src", "binding_easing.mjs"), "export const ok = true;\n");
@@ -387,6 +497,196 @@ if (isDirectNodeExecution) {
       assert.equal(p5src.status, 200);
       assert.ok(p5src.body.length > 10000, `p5.min.js body too small (${p5src.body.length} bytes) — check vendored path`);
       assert.equal(forbidden.status, 404);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("/p5/sandbox without sketch_id or slot query params returns 400", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-missing-params");
+    const server = await createStageServer({ nodeRoot });
+    try {
+      const noParams = await requestText(`http://${server.host}:${server.port}/p5/sandbox`);
+      const missingSlot = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=x`,
+      );
+      const missingId = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?slot=background`,
+      );
+      const badSlot = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=x&slot=evil`,
+      );
+      assert.equal(noParams.status, 400);
+      assert.equal(missingSlot.status, 400);
+      assert.equal(missingId.status, 400);
+      assert.equal(badSlot.status, 400);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("/p5/sandbox emits an HTTP Content-Security-Policy header with the expected directives", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-csp");
+    const runDir = join(nodeRoot, "output", "run_p5csp");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "p5csp", mode: "precompute", runDir });
+      await server.broadcastPatch({
+        type: "sketch.add",
+        sketch_id: "sketch_csp_1",
+        position: "center",
+        size: "small",
+        code: "function setup(){createCanvas(100,100);}",
+        audio_reactive: false,
+        lifetime_s: null,
+      });
+      const res = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=sketch_csp_1&slot=localized`,
+      );
+      assert.equal(res.status, 200);
+      assert.match(res.headers["content-type"] ?? "", /text\/html/);
+      const csp = res.headers["content-security-policy"] ?? "";
+      for (const directive of [
+        "default-src 'none'",
+        "connect-src 'none'",
+        "frame-src 'none'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "img-src 'self' data: blob:",
+        "style-src 'unsafe-inline'",
+        "script-src 'self' 'unsafe-eval'",
+      ]) {
+        assert.ok(
+          csp.includes(directive),
+          `CSP header missing directive: ${directive} (got ${csp})`,
+        );
+      }
+      // Sketch code is embedded as JSON inside a <script type="application/json"> block;
+      // the response body MUST contain the code so the bridge can pick it up.
+      assert.match(res.body, /createCanvas/);
+      // Script refs point at same-origin vendored p5 and the bridge.
+      assert.match(res.body, /src="\/vendor\/p5\/p5\.min\.js"/);
+      assert.match(res.body, /src="\/p5\/bridge\.js"/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("/p5/sandbox for sketch.background.set uses the fixed __background__ slot key", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-bg");
+    const runDir = join(nodeRoot, "output", "run_p5bg");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "p5bg", mode: "precompute", runDir });
+      await server.broadcastPatch({
+        type: "sketch.background.set",
+        code: "function setup(){noLoop();} function draw(){background(10);}",
+        audio_reactive: true,
+      });
+      const res = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=__background__&slot=background`,
+      );
+      assert.equal(res.status, 200);
+      assert.match(res.body, /function draw\(\)\{background\(10\);\}/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("/p5/sandbox returns an empty-code response for unknown sketch ids (graceful degradation)", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-unknown");
+    const runDir = join(nodeRoot, "output", "run_p5unknown");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "p5unknown", mode: "precompute", runDir });
+      const res = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=never_registered&slot=localized`,
+      );
+      assert.equal(res.status, 200);
+      // Empty string embeds as "" in the JSON block — the bridge defaults
+      // to empty code so the iframe loads cleanly without a sketch.
+      assert.match(res.body, /id="flb-sketch-code"/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("sketch.retire drops the registered code so a stale fetch returns empty", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-retire");
+    const runDir = join(nodeRoot, "output", "run_p5retire");
+    mkdirSync(runDir, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "p5retire", mode: "precompute", runDir });
+      await server.broadcastPatch({
+        type: "sketch.add",
+        sketch_id: "sketch_retire_1",
+        position: "center",
+        size: "small",
+        code: "function draw(){background(42);}",
+        audio_reactive: false,
+        lifetime_s: null,
+      });
+      const before = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=sketch_retire_1&slot=localized`,
+      );
+      assert.match(before.body, /background\(42\)/);
+      await server.broadcastPatch({ type: "sketch.retire", sketch_id: "sketch_retire_1" });
+      const after = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=sketch_retire_1&slot=localized`,
+      );
+      assert.doesNotMatch(after.body, /background\(42\)/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("/p5/bridge.js is served from node/browser/p5_bridge.js with a JS content-type", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-bridge");
+    const server = await createStageServer({ nodeRoot });
+    try {
+      const res = await requestText(`http://${server.host}:${server.port}/p5/bridge.js`);
+      assert.equal(res.status, 200);
+      assert.match(res.headers["content-type"] ?? "", /javascript/);
+      assert.match(res.body, /FLB_BRIDGE_MARKER/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("setCurrentRunContext clears the per-run sketchCodes registry", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-clear");
+    const runDir = join(nodeRoot, "output", "run_clear1");
+    const runDir2 = join(nodeRoot, "output", "run_clear2");
+    mkdirSync(runDir, { recursive: true });
+    mkdirSync(runDir2, { recursive: true });
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "clear1", mode: "precompute", runDir });
+      await server.broadcastPatch({
+        type: "sketch.add",
+        sketch_id: "keep_me",
+        position: "center",
+        size: "small",
+        code: "function draw(){fill('red');}",
+        audio_reactive: false,
+        lifetime_s: null,
+      });
+      const still = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=keep_me&slot=localized`,
+      );
+      assert.match(still.body, /fill\('red'\)/);
+      // New run context must purge the old registry — stale p5 source
+      // from a prior run must not leak into the next.
+      await server.setCurrentRunContext({ runId: "clear2", mode: "precompute", runDir: runDir2 });
+      const gone = await requestText(
+        `http://${server.host}:${server.port}/p5/sandbox?sketch_id=keep_me&slot=localized`,
+      );
+      assert.doesNotMatch(gone.body, /fill\('red'\)/);
     } finally {
       await server.close();
     }
