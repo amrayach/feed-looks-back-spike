@@ -43,7 +43,7 @@
     <div id="stage-root"></div>
     <audio id="stage-audio" controls preload="auto"></audio>
     <script type="module">
-      import { loadBootstrap } from "/browser/bootstrap.mjs";
+      import { buildShowRedirectUrlFromLegacyHudSearch, loadBootstrap } from "/browser/bootstrap.mjs";
       import { createSceneReducer } from "/browser/scene_reducer.mjs";
       import { createWsClient } from "/browser/ws_client.mjs";
       import { createFeatureBus } from "/browser/feature_bus.mjs";
@@ -52,99 +52,107 @@
       import { createP5Sandbox } from "/browser/p5_sandbox.mjs";
       import { createAudioVisualLayer } from "/browser/audio_visual_layer.mjs";
 
-      const bootstrap = loadBootstrap({ locationLike: window.location, documentLike: document });
-      const mount = document.getElementById("stage-root");
-      const audio = document.getElementById("stage-audio");
+      const showRedirectUrl = window.self === window.top
+        ? buildShowRedirectUrlFromLegacyHudSearch(window.location.search)
+        : null;
 
-      const stageHasAudio = bootstrap.mode === "precompute" || bootstrap.audio === true;
-      if (stageHasAudio) {
-        audio.src = `/run/${bootstrap.run_id}/audio.wav`;
-        audio.autoplay = true;
-        audio.loop = bootstrap.mode === "live" && bootstrap.audio === true;
-        audio.addEventListener("canplay", () => {
-          audio.play().catch(() => {
-            // Browser autoplay policies often require the first user gesture.
-          });
-        }, { once: true });
-        const unlockAudio = () => {
-          audio.play().catch(() => {});
-        };
-        document.addEventListener("pointerdown", unlockAudio, { once: true });
-        document.addEventListener("keydown", unlockAudio, { once: true });
+      if (showRedirectUrl) {
+        window.location.replace(showRedirectUrl);
       } else {
-        audio.remove();
-      }
+        const bootstrap = loadBootstrap({ locationLike: window.location, documentLike: document });
+        const mount = document.getElementById("stage-root");
+        const audio = document.getElementById("stage-audio");
 
-      const bus = createFeatureBus();
-      window.__featureBus = bus;
+        const stageHasAudio = bootstrap.mode === "precompute" || bootstrap.audio === true;
+        if (stageHasAudio) {
+          audio.src = `/run/${bootstrap.run_id}/audio.wav`;
+          audio.autoplay = true;
+          audio.loop = bootstrap.mode === "live" && bootstrap.audio === true;
+          audio.addEventListener("canplay", () => {
+            audio.play().catch(() => {
+              // Browser autoplay policies often require the first user gesture.
+            });
+          }, { once: true });
+          const unlockAudio = () => {
+            audio.play().catch(() => {});
+          };
+          document.addEventListener("pointerdown", unlockAudio, { once: true });
+          document.addEventListener("keydown", unlockAudio, { once: true });
+        } else {
+          audio.remove();
+        }
 
-      const bindingEngine = createBindingEngine({ bus });
-      window.__bindingEngine = bindingEngine;
+        const bus = createFeatureBus();
+        window.__featureBus = bus;
 
-      const p5Sandbox = createP5Sandbox({
-        mount,
-        bus,
-        // A thrown sketch surfaces here. Keep it console-level only;
-        // retireAndReplace already mounts a figurative DOM fallback
-        // in the slot so the stage never goes blank.
-        onSketchError: (info) => {
-          console.warn("[p5_sandbox] sketch error", info.sketch_id, info.message);
-        },
-        // Reason values: "retire" (author-driven), "remount" (same id
-        // re-added), "dispose" (page teardown), "sketch-error"
-        // (postMessage), "heartbeat-timeout" (watchdog).
-        onRetire: (info) => {
-          if (info.reason === "sketch-error" || info.reason === "heartbeat-timeout") {
-            console.warn("[p5_sandbox] sketch retired", info.sketch_id, info.reason);
-          }
-        },
-      });
-      window.__p5Sandbox = p5Sandbox;
+        const bindingEngine = createBindingEngine({ bus });
+        window.__bindingEngine = bindingEngine;
 
-      const reducer = createSceneReducer({
-        documentLike: document,
-        mount,
-        readyTarget: document.body,
-        bindingEngine,
-        p5Sandbox,
-      });
-      try {
-        window.__audioVisualLayer = createAudioVisualLayer({
+        const p5Sandbox = createP5Sandbox({
           mount,
           bus,
-          audioEl: stageHasAudio ? audio : null,
-          onError: (err) => console.warn("[audio_visual_layer]", err),
+          // A thrown sketch surfaces here. Keep it console-level only;
+          // retireAndReplace already mounts a figurative DOM fallback
+          // in the slot so the stage never goes blank.
+          onSketchError: (info) => {
+            console.warn("[p5_sandbox] sketch error", info.sketch_id, info.message);
+          },
+          // Reason values: "retire" (author-driven), "remount" (same id
+          // re-added), "dispose" (page teardown), "sketch-error"
+          // (postMessage), "heartbeat-timeout" (watchdog).
+          onRetire: (info) => {
+            if (info.reason === "sketch-error" || info.reason === "heartbeat-timeout") {
+              console.warn("[p5_sandbox] sketch retired", info.sketch_id, info.reason);
+            }
+          },
         });
-      } catch (err) {
-        console.warn("[audio_visual_layer] disabled", err);
-      }
+        window.__p5Sandbox = p5Sandbox;
 
-      let replaying = false;
-      function handlePatch(patch) {
-        if (patch?.type === "replay.begin") replaying = true;
-        reducer.applyPatch(patch);
-        if (!replaying) window.__audioVisualLayer?.triggerCommandPulse?.(patch);
-        if (patch?.type === "replay.end") replaying = false;
-      }
-
-      createWsClient({
-        run_id: bootstrap.run_id,
-        mode: bootstrap.mode,
-        onPatch: handlePatch,
-        onFeature: (feature, value) => bus.dispatch(feature, value),
-        onStatus: (event) => {
-          if (event.type === "error") console.error("[stage ws]", event.message);
-        },
-      });
-
-      if (bootstrap.mode === "precompute") {
-        const replayer = createFeatureReplayer({
-          bus,
-          audioEl: audio,
-          runId: bootstrap.run_id,
-          onError: (err) => console.error("[feature_replayer]", err),
+        const reducer = createSceneReducer({
+          documentLike: document,
+          mount,
+          readyTarget: document.body,
+          bindingEngine,
+          p5Sandbox,
         });
-        replayer.start();
+        try {
+          window.__audioVisualLayer = createAudioVisualLayer({
+            mount,
+            bus,
+            audioEl: stageHasAudio ? audio : null,
+            onError: (err) => console.warn("[audio_visual_layer]", err),
+          });
+        } catch (err) {
+          console.warn("[audio_visual_layer] disabled", err);
+        }
+
+        let replaying = false;
+        function handlePatch(patch) {
+          if (patch?.type === "replay.begin") replaying = true;
+          reducer.applyPatch(patch);
+          if (!replaying) window.__audioVisualLayer?.triggerCommandPulse?.(patch);
+          if (patch?.type === "replay.end") replaying = false;
+        }
+
+        createWsClient({
+          run_id: bootstrap.run_id,
+          mode: bootstrap.mode,
+          onPatch: handlePatch,
+          onFeature: (feature, value) => bus.dispatch(feature, value),
+          onStatus: (event) => {
+            if (event.type === "error") console.error("[stage ws]", event.message);
+          },
+        });
+
+        if (bootstrap.mode === "precompute") {
+          const replayer = createFeatureReplayer({
+            bus,
+            audioEl: audio,
+            runId: bootstrap.run_id,
+            onError: (err) => console.error("[feature_replayer]", err),
+          });
+          replayer.start();
+        }
       }
     </script>
   </body>

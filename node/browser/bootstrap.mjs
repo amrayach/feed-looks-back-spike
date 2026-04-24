@@ -21,6 +21,17 @@ export function parseBootstrapSearch(search) {
   };
 }
 
+export function buildShowRedirectUrlFromLegacyHudSearch(search) {
+  const params = new URLSearchParams(search ?? "");
+  if (!params.has("hud")) return null;
+  const run_id = params.get("run_id") || params.get("hud");
+  if (!run_id || !/^[A-Za-z0-9_-]+$/.test(run_id)) return null;
+  const mode = params.get("mode") === "precompute" ? "precompute" : "live";
+  const showParams = new URLSearchParams({ run_id, mode });
+  if (params.get("audio") === "1") showParams.set("audio", "1");
+  return `/show?${showParams.toString()}`;
+}
+
 export function renderBootstrapError(documentLike, message) {
   const body = documentLike?.body ?? documentLike;
   if (!body) return;
@@ -81,6 +92,18 @@ if (isDirectNodeExecution) {
     const parsed = parseBootstrapSearch("?run_id=20260423_220000&mode=live&audio=1");
     assert.equal(parsed.ok, true);
     assert.equal(parsed.value.audio, true);
+  });
+
+  t("buildShowRedirectUrlFromLegacyHudSearch maps old hud query to combined show URL", () => {
+    assert.equal(
+      buildShowRedirectUrlFromLegacyHudSearch("?hud=20260424_203037&mode=live"),
+      "/show?run_id=20260424_203037&mode=live",
+    );
+    assert.equal(
+      buildShowRedirectUrlFromLegacyHudSearch("?run_id=20260424_203037&mode=live&hud=1&audio=1"),
+      "/show?run_id=20260424_203037&mode=live&audio=1",
+    );
+    assert.equal(buildShowRedirectUrlFromLegacyHudSearch("?run_id=20260424_203037&mode=live"), null);
   });
 
   t("parseBootstrapSearch rejects missing params", () => {
