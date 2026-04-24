@@ -59,6 +59,7 @@
       if (stageHasAudio) {
         audio.src = `/run/${bootstrap.run_id}/audio.wav`;
         audio.autoplay = true;
+        audio.loop = bootstrap.mode === "live" && bootstrap.audio === true;
         audio.addEventListener("canplay", () => {
           audio.play().catch(() => {
             // Browser autoplay policies often require the first user gesture.
