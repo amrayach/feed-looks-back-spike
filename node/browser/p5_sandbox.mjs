@@ -2,14 +2,18 @@
 // Host-side manager for sandboxed p5.js sketches. One instance per page;
 // mounts iframes for background + up to 3 localized sketches, forwards
 // feature_bus values into each iframe, watches heartbeats, retires on
-// timeout. Iframe srcdoc is built here from an inlined template + p5
-// source (fetched once from /vendor/p5/p5.min.js) + user sketch code.
+// timeout. Iframe src points at the server's /p5/sandbox route, which
+// returns an HTML shell with a server-enforced CSP header (see
+// node/src/stage_server.mjs and node/browser/p5_bridge.js).
 //
-// Safety boundary (spec §7.3):
+// Safety boundary (spec §7.3, post retroactive patches):
 //   - sandbox="allow-scripts"  — no allow-same-origin, no network
-//   - csp="default-src 'none'; script-src 'unsafe-inline'; img-src blob: data:"
+//   - HTTP Content-Security-Policy header served by /p5/sandbox with
+//     default-src 'none'; connect-src 'none'; frame-src 'none'; and
+//     script-src 'self' 'unsafe-eval' (attribute CSP is not a strong
+//     boundary so we no longer rely on it)
 //   - heartbeat every 500 ms, kill on 2 s silence
-//   - postMessage validation via Zod
+//   - postMessage validation via Zod AND origin+source gate
 //   - figurative-only enforcement lives in the prompt, not at runtime
 
 const sharedUrl = import.meta.url.startsWith("file:")
@@ -42,6 +46,16 @@ const SandboxMessageSchema = z.discriminatedUnion("type", [HeartbeatSchema, Read
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 2000;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 500;
 const INITIAL_WARMUP_GRACE_MS = 3000;
+
+// Must match node/src/stage_server.mjs BG_SKETCH_KEY. Used as the
+// sketch_id query param for background iframes until Fix 6 lands a
+// real sketch_id on the sketch.background.set patch schema.
+const BG_SANDBOX_SLOT_KEY = "__background__";
+
+function buildSandboxSrc(sketchId, slot) {
+  const params = new URLSearchParams({ sketch_id: sketchId, slot });
+  return `/p5/sandbox?${params.toString()}`;
+}
 
 const SKETCH_SIZES = {
   small: { w: 300, h: 300 },
@@ -81,63 +95,15 @@ function positionToStyle(positionKey, sizeKey) {
   return css;
 }
 
-// Template — inlined rather than fetched so we ship one file for the whole
-// sandbox host. __P5_SOURCE__ and __USER_SKETCH__ are split into literal
-// sentinels (not comments) so a sketch author's accidental regex can't
-// collide with the template placeholders.
-const IFRAME_TEMPLATE = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<style>html,body{margin:0;padding:0;overflow:hidden;background:transparent;}canvas{display:block;}</style>
-</head>
-<body>
-<script>/*__FLB_P5_SOURCE__*/</script>
-<script>
-window.features = {
-  amplitude: 0, onset_strength: 0, spectral_centroid: 0,
-  hijaz_state: "unknown", hijaz_intensity: 0, hijaz_tahwil: false
-};
-window.__flb_frame_count = 0;
-window.__flb_last_frame_time_ms = 0;
-window.addEventListener("message", function(e){
-  if (!e.data || typeof e.data !== "object") return;
-  if (e.data.type === "features" && e.data.values && typeof e.data.values === "object") {
-    Object.assign(window.features, e.data.values);
-  }
-});
-function __flb_post_ready(){try{window.parent.postMessage({type:"ready"},"*");}catch(err){}}
-function __flb_post_heartbeat(){try{window.parent.postMessage({type:"heartbeat",frame_count:window.__flb_frame_count,last_frame_time_ms:window.__flb_last_frame_time_ms},"*");}catch(err){}}
-function __flb_post_error(msg){try{window.parent.postMessage({type:"error",message:String(msg).slice(0,500)},"*");}catch(err){}}
-setInterval(__flb_post_heartbeat, 500);
-window.addEventListener("error", function(e){__flb_post_error(e && e.message ? e.message : "sketch error");});
-__flb_post_ready();
-</script>
-<script>
-try {
-/*__FLB_USER_SKETCH__*/
-} catch (err) { __flb_post_error(err && err.message ? err.message : "sketch runtime error"); }
-</script>
-</body>
-</html>`;
-
-export function buildSketchSrcdoc(p5Source, userSketch) {
-  return IFRAME_TEMPLATE
-    .replace("/*__FLB_P5_SOURCE__*/", String(p5Source ?? ""))
-    .replace("/*__FLB_USER_SKETCH__*/", String(userSketch ?? ""));
-}
-
 export function createP5Sandbox({
   documentLike = globalThis.document,
   mount,
   bus,
-  fetchImpl = globalThis.fetch,
   rafImpl = globalThis.requestAnimationFrame,
   cancelRafImpl = globalThis.cancelAnimationFrame,
   setIntervalImpl = globalThis.setInterval,
   clearIntervalImpl = globalThis.clearInterval,
   now = () => (typeof performance !== "undefined" ? performance.now() : Date.now()),
-  p5SourceOverride = null, // for tests
   heartbeatTimeoutMs = DEFAULT_HEARTBEAT_TIMEOUT_MS,
   watchdogIntervalMs = DEFAULT_WATCHDOG_INTERVAL_MS,
   warmupGraceMs = INITIAL_WARMUP_GRACE_MS,
@@ -147,7 +113,6 @@ export function createP5Sandbox({
   if (!mount) throw new Error("mount is required");
 
   const entries = new Map(); // sketch_id → {iframe, slot, createdAt, lastHeartbeat, ready}
-  let p5SourceCache = p5SourceOverride;
   let featuresLatest = {
     amplitude: 0,
     onset_strength: 0,
@@ -160,14 +125,6 @@ export function createP5Sandbox({
   let watchdogHandle = null;
   let subscriptions = [];
   let messageListener = null;
-
-  async function ensureP5Source() {
-    if (p5SourceCache != null) return p5SourceCache;
-    const res = await fetchImpl("/vendor/p5/p5.min.js");
-    if (!res || !res.ok) throw new Error(`p5.min.js fetch failed: ${res?.status ?? "unknown"}`);
-    p5SourceCache = await res.text();
-    return p5SourceCache;
-  }
 
   function subscribeToFeatures() {
     if (subscriptions.length > 0 || !bus) return;
@@ -261,21 +218,25 @@ export function createP5Sandbox({
     messageListener = null;
   }
 
-  async function mountInternal({ sketchId, code, slot, styleCss }) {
+  function mountInternal({ sketchId, urlSketchId, slot, styleCss }) {
     installMessageListener();
     subscribeToFeatures();
 
-    const p5Source = await ensureP5Source();
-    const srcdoc = buildSketchSrcdoc(p5Source, code);
-
+    // urlSketchId is the key the server uses to look up code in its
+    // per-run sketchCodes map. For localized sketches it equals
+    // sketchId (patch.sketch_id). For background it is BG_SANDBOX_SLOT_KEY
+    // until Fix 6 adds sketch_id to the sketch.background.set patch
+    // schema.
     const iframe = documentLike.createElement("iframe");
     iframe.dataset.sketchId = sketchId;
     iframe.dataset.sketchSlot = slot;
     iframe.setAttribute("sandbox", "allow-scripts");
-    iframe.setAttribute("csp", "default-src 'none'; script-src 'unsafe-inline'; img-src blob: data:");
     iframe.style = iframe.style ?? {};
     iframe.style.cssText = styleCss;
-    iframe.srcdoc = srcdoc;
+    // Server serves /p5/sandbox with an HTTP Content-Security-Policy
+    // header. The old iframe csp= attribute is not a strong boundary
+    // (browser support is partial), so we drop it here.
+    iframe.src = buildSandboxSrc(urlSketchId, slot);
 
     mount.appendChild(iframe);
 
@@ -307,7 +268,7 @@ export function createP5Sandbox({
     }
   }
 
-  async function mountBackground({ sketch_id, code }) {
+  function mountBackground({ sketch_id }) {
     // Caller is responsible for retiring the prior background (scene_reducer
     // receives sketch.retire first, then sketch.background.set). Defensive
     // same-id remount tear-down mirrors binding_engine's idempotency.
@@ -321,13 +282,23 @@ export function createP5Sandbox({
       "border: 0",
       "z-index: 0",
     ].join("; ");
-    await mountInternal({ sketchId: sketch_id, code, slot: "background", styleCss });
+    mountInternal({
+      sketchId: sketch_id,
+      urlSketchId: BG_SANDBOX_SLOT_KEY,
+      slot: "background",
+      styleCss,
+    });
   }
 
-  async function mountLocalized({ sketch_id, position, size, code }) {
+  function mountLocalized({ sketch_id, position, size }) {
     if (entries.has(sketch_id)) retireInternal(sketch_id, "remount");
     const styleCss = `${positionToStyle(position, size)}; z-index: 10`;
-    await mountInternal({ sketchId: sketch_id, code, slot: "localized", styleCss });
+    mountInternal({
+      sketchId: sketch_id,
+      urlSketchId: sketch_id,
+      slot: "localized",
+      styleCss,
+    });
   }
 
   function retireSketch(sketch_id) {
@@ -350,7 +321,6 @@ export function createP5Sandbox({
     retireSketch,
     dispose,
     _entries: entries,
-    _setP5SourceCache: (s) => { p5SourceCache = s; },
   };
 }
 
@@ -371,7 +341,7 @@ if (isDirectNodeExecution) {
       this.style = {};
       this._attributes = {};
       this._listeners = new Map();
-      this.srcdoc = null;
+      this.src = null;
       this.parent = null;
       this.contentWindow = { postMessage: () => {} };
     }
@@ -475,87 +445,63 @@ if (isDirectNodeExecution) {
     }
   }
 
-  await t("buildSketchSrcdoc inlines p5 source and user code into the template", () => {
-    const html = buildSketchSrcdoc("P5_SRC_MARKER", "function draw(){background(0);}");
-    assert.match(html, /P5_SRC_MARKER/);
-    assert.match(html, /function draw\(\)\{background\(0\);\}/);
-    // Bridge is in place:
-    assert.match(html, /window\.features\s*=/);
-    assert.match(html, /postMessage.*heartbeat/);
-    // Placeholders are fully substituted:
-    assert.doesNotMatch(html, /__FLB_P5_SOURCE__/);
-    assert.doesNotMatch(html, /__FLB_USER_SKETCH__/);
-  });
-
-  await t("mountBackground creates a sandboxed iframe with the expected attributes", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
+  function makeSandbox(opts = {}) {
+    const documentLike = opts.documentLike ?? new FakeDocument();
+    const mount = opts.mount ?? documentLike.createElement("div");
+    const bus = opts.bus ?? createFeatureBus();
+    const raf = opts.raf ?? rafRunner();
+    const interval = opts.interval ?? intervalRunner();
     const sandbox = createP5Sandbox({
       documentLike,
       mount,
       bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
       rafImpl: raf.schedule,
       cancelRafImpl: raf.cancel,
       setIntervalImpl: interval.set,
       clearIntervalImpl: interval.clear,
-      now: () => 1000,
+      now: opts.now ?? (() => 1000),
+      heartbeatTimeoutMs: opts.heartbeatTimeoutMs,
+      warmupGraceMs: opts.warmupGraceMs,
+      onRetire: opts.onRetire,
+      onSketchError: opts.onSketchError,
     });
-    await sandbox.mountBackground({ sketch_id: "sketch_0001", code: "noop();" });
+    return { sandbox, documentLike, mount, bus, raf, interval };
+  }
+
+  await t("mountBackground creates an iframe with sandbox='allow-scripts' and src pointing at /p5/sandbox", () => {
+    const { sandbox, mount } = makeSandbox();
+    sandbox.mountBackground({ sketch_id: "sketch_0001" });
     assert.equal(mount.children.length, 1);
     const iframe = mount.children[0];
     assert.equal(iframe.getAttribute("sandbox"), "allow-scripts");
-    assert.match(iframe.getAttribute("csp"), /default-src 'none'/);
-    assert.match(iframe.srcdoc, /P5_MOCK/);
-    assert.match(iframe.srcdoc, /noop\(\);/);
+    // csp= attribute is intentionally NOT set — HTTP CSP header served by
+    // /p5/sandbox replaces it (attribute CSP is a weak boundary).
+    assert.equal(iframe.getAttribute("csp"), undefined);
+    // srcdoc is no longer used — iframe loads over HTTP so origin checks work.
+    assert.equal(iframe.srcdoc, undefined);
+    // Background sketches use a fixed slot key in the URL until Fix 6.
+    assert.match(iframe.src, /^\/p5\/sandbox\?sketch_id=__background__&slot=background$/);
     assert.equal(sandbox._entries.size, 1);
   });
 
-  await t("mountLocalized positions the iframe according to position + size", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
-    const sandbox = createP5Sandbox({
-      documentLike,
-      mount,
-      bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-    });
-    await sandbox.mountLocalized({ sketch_id: "sketch_a", position: "top-right", size: "small", code: "" });
+  await t("mountLocalized positions the iframe according to position + size and uses src with patch sketch_id", () => {
+    const { sandbox, mount } = makeSandbox();
+    sandbox.mountLocalized({ sketch_id: "sketch_a", position: "top-right", size: "small" });
     const iframe = mount.children[0];
     assert.match(iframe.style.cssText, /width: 300px/);
     assert.match(iframe.style.cssText, /height: 300px/);
     assert.match(iframe.style.cssText, /top: 0%/);
     assert.match(iframe.style.cssText, /right: 0%/);
+    // Localized sketches key by the patch's sketch_id directly.
+    assert.match(iframe.src, /^\/p5\/sandbox\?sketch_id=sketch_a&slot=localized$/);
+    // No allow-same-origin regression.
+    assert.doesNotMatch(iframe.getAttribute("sandbox") ?? "", /allow-same-origin/);
   });
 
-  await t("feature dispatch populates featuresLatest and forwards on rAF tick", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
+  await t("feature dispatch populates featuresLatest and forwards on rAF tick", () => {
+    const { sandbox, documentLike, mount, bus, raf } = makeSandbox();
     const postedMessages = [];
-    const sandbox = createP5Sandbox({
-      documentLike,
-      mount,
-      bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-    });
-    await sandbox.mountLocalized({ sketch_id: "sketch_b", position: "center", size: "medium", code: "" });
+    sandbox.mountLocalized({ sketch_id: "sketch_b", position: "center", size: "medium" });
     const iframe = mount.children[0];
     iframe.contentWindow.postMessage = (data) => postedMessages.push(data);
     // Mark ready so forwardFeaturesTick will post.
@@ -569,26 +515,10 @@ if (isDirectNodeExecution) {
     assert.equal(last.values.hijaz_state, "arrived");
   });
 
-  await t("heartbeat message updates lastHeartbeat", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
-    let clock = 0;
-    const sandbox = createP5Sandbox({
-      documentLike,
-      mount,
-      bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-      now: () => clock,
-    });
-    clock = 100;
-    await sandbox.mountLocalized({ sketch_id: "sketch_c", position: "center", size: "small", code: "" });
+  await t("heartbeat message updates lastHeartbeat", () => {
+    let clock = 100;
+    const { sandbox, documentLike, mount } = makeSandbox({ now: () => clock });
+    sandbox.mountLocalized({ sketch_id: "sketch_c", position: "center", size: "small" });
     const iframe = mount.children[0];
     clock = 500;
     documentLike.defaultView.dispatchMessage(iframe.contentWindow, { type: "heartbeat", frame_count: 30, last_frame_time_ms: 16.7 });
@@ -596,30 +526,16 @@ if (isDirectNodeExecution) {
     assert.equal(entry.lastHeartbeat, 500);
   });
 
-  await t("no heartbeat past warmup + timeout retires the sketch (watchdog fires)", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
+  await t("no heartbeat past warmup + timeout retires the sketch (watchdog fires)", () => {
     const retired = [];
-    let clock = 0;
-    const sandbox = createP5Sandbox({
-      documentLike,
-      mount,
-      bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
+    let clock = 100;
+    const { sandbox, interval } = makeSandbox({
       now: () => clock,
       heartbeatTimeoutMs: 2000,
       warmupGraceMs: 3000,
       onRetire: (info) => retired.push(info),
     });
-    clock = 100;
-    await sandbox.mountLocalized({ sketch_id: "sketch_d", position: "center", size: "small", code: "" });
+    sandbox.mountLocalized({ sketch_id: "sketch_d", position: "center", size: "small" });
     // Still inside warmup grace — tick the watchdog, no retirement yet.
     clock = 3000;
     interval.tick();
@@ -633,48 +549,19 @@ if (isDirectNodeExecution) {
     assert.equal(retired[0].reason, "heartbeat-timeout");
   });
 
-  await t("retireSketch removes iframe and fires onRetire with 'retire'", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
+  await t("retireSketch removes iframe and fires onRetire with 'retire'", () => {
     const retired = [];
-    const sandbox = createP5Sandbox({
-      documentLike,
-      mount,
-      bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-      onRetire: (info) => retired.push(info),
-    });
-    await sandbox.mountLocalized({ sketch_id: "sketch_e", position: "center", size: "medium", code: "" });
+    const { sandbox, mount } = makeSandbox({ onRetire: (info) => retired.push(info) });
+    sandbox.mountLocalized({ sketch_id: "sketch_e", position: "center", size: "medium" });
     sandbox.retireSketch("sketch_e");
     assert.equal(mount.children.length, 0);
     assert.equal(retired[0].reason, "retire");
   });
 
-  await t("invalid postMessage shape is dropped silently (no crash, no heartbeat update)", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
+  await t("invalid postMessage shape is dropped silently (no crash, no heartbeat update)", () => {
     let clock = 0;
-    const sandbox = createP5Sandbox({
-      documentLike, mount, bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-      now: () => clock,
-    });
-    clock = 0;
-    await sandbox.mountLocalized({ sketch_id: "sketch_f", position: "center", size: "small", code: "" });
+    const { sandbox, documentLike, mount } = makeSandbox({ now: () => clock });
+    sandbox.mountLocalized({ sketch_id: "sketch_f", position: "center", size: "small" });
     const iframe = mount.children[0];
     const entry = sandbox._entries.get("sketch_f");
     const before = entry.lastHeartbeat;
@@ -682,22 +569,10 @@ if (isDirectNodeExecution) {
     assert.equal(entry.lastHeartbeat, before);
   });
 
-  await t("dispose tears down iframes, watchdog, rAF, and message listener", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
-    const sandbox = createP5Sandbox({
-      documentLike, mount, bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-    });
-    await sandbox.mountLocalized({ sketch_id: "s1", position: "center", size: "small", code: "" });
-    await sandbox.mountLocalized({ sketch_id: "s2", position: "top-left", size: "small", code: "" });
+  await t("dispose tears down iframes, watchdog, rAF, and message listener", () => {
+    const { sandbox, mount, raf, interval } = makeSandbox();
+    sandbox.mountLocalized({ sketch_id: "s1", position: "center", size: "small" });
+    sandbox.mountLocalized({ sketch_id: "s2", position: "top-left", size: "small" });
     sandbox.dispose();
     assert.equal(sandbox._entries.size, 0);
     assert.equal(mount.children.length, 0);
@@ -705,24 +580,12 @@ if (isDirectNodeExecution) {
     assert.equal(interval.pending(), 0);
   });
 
-  await t("ready message marks entry ready; unready entries don't receive feature messages", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
-    const sandbox = createP5Sandbox({
-      documentLike, mount, bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-    });
+  await t("ready message marks entry ready; unready entries don't receive feature messages", () => {
+    const { sandbox, documentLike, mount, bus, raf } = makeSandbox();
     const postedToA = [];
     const postedToB = [];
-    await sandbox.mountLocalized({ sketch_id: "a", position: "center", size: "small", code: "" });
-    await sandbox.mountLocalized({ sketch_id: "b", position: "top-left", size: "small", code: "" });
+    sandbox.mountLocalized({ sketch_id: "a", position: "center", size: "small" });
+    sandbox.mountLocalized({ sketch_id: "b", position: "top-left", size: "small" });
     const iframeA = mount.children[0];
     const iframeB = mount.children[1];
     iframeA.contentWindow.postMessage = (data) => postedToA.push(data);
@@ -734,25 +597,13 @@ if (isDirectNodeExecution) {
     assert.equal(postedToB.length, 0); // b is not ready yet — no feature post
   });
 
-  await t("remount with same sketch_id tears down prior entry", async () => {
-    const documentLike = new FakeDocument();
-    const mount = documentLike.createElement("div");
-    const bus = createFeatureBus();
-    const raf = rafRunner();
-    const interval = intervalRunner();
-    const sandbox = createP5Sandbox({
-      documentLike, mount, bus,
-      fetchImpl: async () => ({ ok: true, text: async () => "P5_MOCK" }),
-      rafImpl: raf.schedule,
-      cancelRafImpl: raf.cancel,
-      setIntervalImpl: interval.set,
-      clearIntervalImpl: interval.clear,
-    });
-    await sandbox.mountLocalized({ sketch_id: "r1", position: "center", size: "small", code: "A" });
-    await sandbox.mountLocalized({ sketch_id: "r1", position: "top-left", size: "small", code: "B" });
+  await t("remount with same sketch_id tears down prior entry and re-issues src", () => {
+    const { sandbox, mount } = makeSandbox();
+    sandbox.mountLocalized({ sketch_id: "r1", position: "center", size: "small" });
+    sandbox.mountLocalized({ sketch_id: "r1", position: "top-left", size: "small" });
     assert.equal(sandbox._entries.size, 1);
     assert.equal(mount.children.length, 1);
-    assert.match(mount.children[0].srcdoc, /B/);
+    assert.match(mount.children[0].src, /^\/p5\/sandbox\?sketch_id=r1&slot=localized$/);
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);

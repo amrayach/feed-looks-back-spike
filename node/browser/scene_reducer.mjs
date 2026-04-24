@@ -247,8 +247,12 @@ export function createSceneReducer({
           // patch precedes this when replacing. If the old background
           // wasn't retired first (e.g. operator-side patch only), the
           // sandbox's mountBackground idempotently replaces by slot.
+          // Sketch code travels over WS to the server (registered in
+          // sketchCodes), NOT through the browser — iframe loads it
+          // from /p5/sandbox. Host-side sketch_id is only used for
+          // local iframe tracking (retire, entries map).
           const bgSketchId = `background_${Date.now()}`;
-          p5Sandbox.mountBackground({ sketch_id: bgSketchId, code: parsed.code });
+          p5Sandbox.mountBackground({ sketch_id: bgSketchId });
           currentBackgroundSketchId = bgSketchId;
         }
         break;
@@ -268,7 +272,6 @@ export function createSceneReducer({
             sketch_id: parsed.sketch_id,
             position: parsed.position,
             size: parsed.size,
-            code: parsed.code,
           });
         }
         break;
@@ -608,7 +611,7 @@ if (isDirectNodeExecution) {
     };
   }
 
-  t("sketch.background.set calls p5Sandbox.mountBackground", () => {
+  t("sketch.background.set calls p5Sandbox.mountBackground with a host-side sketch_id (no code)", () => {
     const documentLike = new FakeDocument();
     const mount = documentLike.createElement("div");
     const p5Sandbox = makeFakeP5Sandbox();
@@ -623,10 +626,14 @@ if (isDirectNodeExecution) {
       audio_reactive: true,
     });
     assert.equal(p5Sandbox.mountBgCalls.length, 1);
-    assert.equal(p5Sandbox.mountBgCalls[0].code, "function draw(){}");
+    // Code flows over WS into the server's per-run sketchCodes map; the
+    // iframe loads it from /p5/sandbox. Browser no longer forwards code
+    // to mountBackground.
+    assert.equal(p5Sandbox.mountBgCalls[0].code, undefined);
+    assert.match(p5Sandbox.mountBgCalls[0].sketch_id, /^background_/);
   });
 
-  t("sketch.add calls p5Sandbox.mountLocalized with full spec", () => {
+  t("sketch.add calls p5Sandbox.mountLocalized with sketch_id/position/size (code routed via server)", () => {
     const documentLike = new FakeDocument();
     const mount = documentLike.createElement("div");
     const p5Sandbox = makeFakeP5Sandbox();
@@ -647,6 +654,7 @@ if (isDirectNodeExecution) {
     assert.equal(p5Sandbox.mountLocalizedCalls.length, 1);
     assert.equal(p5Sandbox.mountLocalizedCalls[0].sketch_id, "sketch_0003");
     assert.equal(p5Sandbox.mountLocalizedCalls[0].position, "top-right");
+    assert.equal(p5Sandbox.mountLocalizedCalls[0].code, undefined);
   });
 
   t("sketch.retire calls p5Sandbox.retireSketch and drops from tracked list", () => {
