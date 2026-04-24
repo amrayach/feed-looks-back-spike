@@ -119,10 +119,18 @@
         console.warn("[audio_visual_layer] disabled", err);
       }
 
+      let replaying = false;
+      function handlePatch(patch) {
+        if (patch?.type === "replay.begin") replaying = true;
+        reducer.applyPatch(patch);
+        if (!replaying) window.__audioVisualLayer?.triggerCommandPulse?.(patch);
+        if (patch?.type === "replay.end") replaying = false;
+      }
+
       createWsClient({
         run_id: bootstrap.run_id,
         mode: bootstrap.mode,
-        onPatch: (patch) => reducer.applyPatch(patch),
+        onPatch: handlePatch,
         onFeature: (feature, value) => bus.dispatch(feature, value),
         onStatus: (event) => {
           if (event.type === "error") console.error("[stage ws]", event.message);

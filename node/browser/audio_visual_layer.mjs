@@ -15,6 +15,7 @@ const FEATURE_NAMES = [
 ];
 
 const VALID_STATES = new Set(["quiet", "approach", "arrived", "tahwil", "aug2"]);
+const NON_COMMAND_PATCH_TYPES = new Set(["cycle.begin", "cycle.end", "replay.begin", "replay.end"]);
 
 const PALETTES = Object.freeze({
   quiet: Object.freeze({
@@ -60,6 +61,56 @@ function smooth(current, target, factor) {
 
 function rgba(rgb, alpha) {
   return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha.toFixed(3)})`;
+}
+
+function hashString(input) {
+  const str = String(input ?? "");
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function normalizedFromHash(seed, offset) {
+  const byte = (seed >>> offset) & 0xff;
+  return byte / 255;
+}
+
+export function isCommandPatch(patch) {
+  return Boolean(patch?.type && !NON_COMMAND_PATCH_TYPES.has(patch.type));
+}
+
+export function createCommandPulse(patch, startedAtS = 0, { reducedMotion = false } = {}) {
+  if (!isCommandPatch(patch)) return null;
+  const key = patch.element_id ?? patch.element?.element_id ?? patch.group_id ?? patch.sketch_id ?? patch.type;
+  const seed = hashString(`${patch.type}:${key}`);
+  const strengthByType = {
+    "background.set": 0.95,
+    "sketch.background.set": 1,
+    "scene.pulse": 1.15,
+    "scene.palette_shift": 0.95,
+    "element.add": 0.85,
+    "composition_group.add": 0.9,
+    "element.morph": 0.9,
+    "element.transform": 0.72,
+    "text.animate": 0.72,
+    "element.fade": 0.62,
+    "composition_group.fade": 0.64,
+    "element.remove": 0.5,
+    "sketch.retire": 0.5,
+  };
+  const sceneWide = patch.type?.startsWith("scene.") || patch.type === "background.set" || patch.type === "sketch.background.set";
+  return {
+    patchType: patch.type,
+    startedAtS,
+    durationS: reducedMotion ? 0.48 : 1.22,
+    strength: reducedMotion ? 0.38 : strengthByType[patch.type] ?? 0.68,
+    nx: sceneWide ? 0.5 : 0.18 + normalizedFromHash(seed, 0) * 0.64,
+    ny: sceneWide ? 0.52 : 0.22 + normalizedFromHash(seed, 8) * 0.58,
+    sceneWide,
+  };
 }
 
 export function deriveAudioFeaturesFromFrequencyBins(bytes) {
@@ -123,7 +174,57 @@ function resizeCanvas(canvas, ctx, windowLike) {
   return { width: width / dpr, height: height / dpr, dpr };
 }
 
-function drawLayer(ctx, canvas, frame, timeS, windowLike) {
+function drawCommandPulses(ctx, width, height, frame, timeS, commandPulses) {
+  if (!commandPulses?.length) return;
+  const { palette } = frame;
+  ctx.globalCompositeOperation = "screen";
+  for (const pulse of commandPulses) {
+    const age = Math.max(0, timeS - pulse.startedAtS);
+    const t = clamp01(age / Math.max(0.001, pulse.durationS));
+    if (t >= 1) continue;
+    const easeOut = 1 - (1 - t) * (1 - t);
+    const alpha = (1 - t) * (1 - t) * pulse.strength;
+    const x = width * pulse.nx;
+    const y = height * pulse.ny;
+    const maxRadius = pulse.sceneWide ? Math.max(width, height) * 0.78 : Math.min(width, height) * 0.54;
+    const radius = 24 + easeOut * maxRadius;
+
+    if (ctx.createRadialGradient) {
+      const glow = ctx.createRadialGradient(x, y, radius * 0.04, x, y, radius);
+      glow.addColorStop(0, rgba(palette.accent, Math.min(0.24, alpha * 0.2)));
+      glow.addColorStop(0.34, rgba(palette.warm, Math.min(0.18, alpha * 0.16)));
+      glow.addColorStop(1, rgba(palette.cool, 0));
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.strokeStyle = rgba(palette.accent, Math.min(0.5, alpha * 0.46));
+    ctx.lineWidth = 1 + pulse.strength * 5 * (1 - t);
+    ctx.beginPath();
+    if (ctx.arc) {
+      ctx.arc(x, y, radius * 0.58, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(x - radius, y);
+      ctx.lineTo(x, y - radius);
+      ctx.lineTo(x + radius, y);
+      ctx.lineTo(x, y + radius);
+      ctx.closePath();
+    }
+    ctx.stroke();
+
+    const sweepY = y + (t - 0.5) * height * 0.42;
+    ctx.strokeStyle = rgba(palette.warm, Math.min(0.26, alpha * 0.22));
+    ctx.lineWidth = 1 + pulse.strength * 3;
+    ctx.beginPath();
+    ctx.moveTo(width * 0.08, sweepY);
+    ctx.lineTo(width * 0.92, sweepY + Math.sin(timeS + pulse.nx * 6) * 22);
+    ctx.stroke();
+  }
+}
+
+function drawLayer(ctx, canvas, frame, timeS, windowLike, commandPulses = []) {
   const { width, height } = resizeCanvas(canvas, ctx, windowLike);
   const { palette, amplitude, onset, energy, centroid, drift } = frame;
   ctx.clearRect(0, 0, width, height);
@@ -208,6 +309,8 @@ function drawLayer(ctx, canvas, frame, timeS, windowLike) {
     ctx.lineTo(width * 0.92, horizon - onset * 70);
     ctx.stroke();
   }
+
+  drawCommandPulses(ctx, width, height, frame, timeS, commandPulses);
 
   ctx.restore?.();
 }
@@ -309,6 +412,8 @@ export function createAudioVisualLayer({
   let frame = computeVisualFrame(features, {}, { reducedMotion });
   let rafHandle = null;
   let stopped = false;
+  let lastTimeS = 0;
+  let commandPulses = [];
   const unsubscribers = [];
   const analyser = createAudioAnalyser({ audioEl, windowLike, onError });
 
@@ -329,6 +434,7 @@ export function createAudioVisualLayer({
 
   function tick(ts = 0) {
     if (stopped) return;
+    lastTimeS = ts / 1000;
     const derived = analyser?.read?.();
     if (derived) {
       features.amplitude = Math.max(clamp01(features.amplitude), derived.amplitude);
@@ -337,7 +443,8 @@ export function createAudioVisualLayer({
       features.hijaz_intensity = Math.max(clamp01(features.hijaz_intensity), derived.amplitude);
     }
     frame = computeVisualFrame(features, frame, { reducedMotion });
-    if (ctx) drawLayer(ctx, canvas, frame, ts / 1000, windowLike);
+    commandPulses = commandPulses.filter((pulse) => lastTimeS - pulse.startedAtS < pulse.durationS);
+    if (ctx) drawLayer(ctx, canvas, frame, lastTimeS, windowLike, commandPulses);
     if (rafImpl) rafHandle = rafImpl(tick);
   }
 
@@ -353,11 +460,21 @@ export function createAudioVisualLayer({
     canvas.remove?.();
   }
 
+  function triggerCommandPulse(patch) {
+    const pulse = createCommandPulse(patch, lastTimeS, { reducedMotion });
+    if (!pulse) return false;
+    commandPulses.push(pulse);
+    if (commandPulses.length > 8) commandPulses = commandPulses.slice(-8);
+    return true;
+  }
+
   return {
     canvas,
     stop,
+    triggerCommandPulse,
     getFrame: () => frame,
     getFeatures: () => ({ ...features }),
+    getCommandPulses: () => [...commandPulses],
   };
 }
 
@@ -438,9 +555,11 @@ if (isDirectNodeExecution) {
         moveTo: (...args) => calls.push(["moveTo", ...args]),
         lineTo: (...args) => calls.push(["lineTo", ...args]),
         closePath: () => calls.push(["closePath"]),
+        arc: (...args) => calls.push(["arc", ...args]),
         fill: () => calls.push(["fill"]),
         stroke: () => calls.push(["stroke"]),
         createLinearGradient: () => ({ addColorStop: (...args) => calls.push(["addColorStop", ...args]) }),
+        createRadialGradient: () => ({ addColorStop: (...args) => calls.push(["radialColorStop", ...args]) }),
         set globalCompositeOperation(value) { calls.push(["gco", value]); },
         set fillStyle(value) { calls.push(["fillStyle", value]); },
         set strokeStyle(value) { calls.push(["strokeStyle", value]); },
@@ -489,6 +608,21 @@ if (isDirectNodeExecution) {
     assert.deepEqual(frameOut.palette, PALETTES.tahwil);
   });
 
+  t("isCommandPatch ignores lifecycle/replay patches and accepts visual patches", () => {
+    assert.equal(isCommandPatch({ type: "cycle.begin" }), false);
+    assert.equal(isCommandPatch({ type: "replay.end" }), false);
+    assert.equal(isCommandPatch({ type: "element.add", element: {} }), true);
+  });
+
+  t("createCommandPulse maps a patch to a bounded visual impulse", () => {
+    const pulse = createCommandPulse({ type: "element.transform", element_id: "elem_001" }, 2);
+    assert.equal(pulse.patchType, "element.transform");
+    assert.equal(pulse.startedAtS, 2);
+    assert.ok(pulse.nx >= 0 && pulse.nx <= 1);
+    assert.ok(pulse.ny >= 0 && pulse.ny <= 1);
+    assert.ok(pulse.strength > 0);
+  });
+
   t("createAudioVisualLayer mounts a non-interactive canvas and consumes feature bus values", () => {
     const mount = new FakeNode("div");
     const bus = createFeatureBus();
@@ -513,6 +647,30 @@ if (isDirectNodeExecution) {
     assert.equal(layer.getFeatures().hijaz_state, "aug2");
     assert.ok(layer.getFrame().energy > 0);
     assert.ok(layer.canvas.calls.some((call) => call[0] === "stroke"));
+    layer.stop();
+  });
+
+  t("triggerCommandPulse queues a ripple and draws it on the next frame", () => {
+    const mount = new FakeNode("div");
+    const bus = createFeatureBus();
+    let rafCallback = null;
+    const layer = createAudioVisualLayer({
+      mount,
+      bus,
+      documentLike: fakeDocument,
+      windowLike: { devicePixelRatio: 1, matchMedia: () => ({ matches: false }) },
+      rafImpl: (fn) => {
+        rafCallback = fn;
+        return 1;
+      },
+      cancelRafImpl: () => {},
+    });
+    assert.equal(layer.triggerCommandPulse({ type: "cycle.begin" }), false);
+    assert.equal(layer.triggerCommandPulse({ type: "element.add", element: { element_id: "elem_001" } }), true);
+    assert.equal(layer.getCommandPulses().length, 1);
+    rafCallback(1000);
+    assert.ok(layer.canvas.calls.some((call) => call[0] === "arc"));
+    assert.ok(layer.canvas.calls.some((call) => call[0] === "radialColorStop"));
     layer.stop();
   });
 
