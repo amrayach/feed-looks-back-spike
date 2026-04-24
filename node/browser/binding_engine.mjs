@@ -40,10 +40,13 @@ export function coerceFeatureValue(feature, value) {
 }
 
 export function restValueForBinding(binding) {
-  // Rest = lower output bound. Authors who want an inverted rest (rest
-  // at the upper end when at-rest input is high) can flip map.out.
-  const [lo, hi] = binding.map.out;
-  return Math.min(lo, hi);
+  // Rest = out[0] verbatim — the authored start-of-map endpoint. An
+  // author writing out=[1, 0] means "rest at 1, descend toward 0 as
+  // input rises" (e.g. an opacity that dims when the music gets louder);
+  // Math.min(lo, hi) would silently flip that to 0 and the inversion
+  // the author asked for would never appear. For a standard ascending
+  // tuple out=[lo, hi] this is the same value as before.
+  return binding.map.out[0];
 }
 
 export function smoothingFor(binding) {
@@ -409,6 +412,44 @@ if (isDirectNodeExecution) {
     raf.tick(clock);
     // At peak of impulse (t=0.5, eased to 1.0), scale should be at max = 2
     assert.equal(node2.style.transform, "scale(2)");
+  });
+
+  t("restValueForBinding returns map.out[0] verbatim (Fix 9; honors inverted tuples)", () => {
+    // Ascending tuple: rest = out[0] = 0.
+    assert.equal(
+      restValueForBinding({ map: { in: [0, 1], out: [0, 1], curve: "linear" } }),
+      0,
+    );
+    // Inverted tuple: author wants rest=1, descending to 0. Under the
+    // old Math.min semantics this would have returned 0 — wrong.
+    assert.equal(
+      restValueForBinding({ map: { in: [0, 1], out: [1, 0], curve: "linear" } }),
+      1,
+    );
+    // Non-[0,1] endpoints: still returns out[0] verbatim.
+    assert.equal(
+      restValueForBinding({ map: { in: [0, 1], out: [0.7, 0.2], curve: "linear" } }),
+      0.7,
+    );
+  });
+
+  t("mount with an inverted map.out writes out[0] as the at-rest DOM value (Fix 9 end-to-end)", () => {
+    const bus = createFeatureBus();
+    const raf = rafRunner();
+    let clock = 0;
+    const engine = createBindingEngine({
+      bus,
+      rafImpl: raf.schedule,
+      cancelRafImpl: raf.cancel,
+      now: () => clock,
+    });
+    const node = new FakeElement();
+    // "descend from rest": opacity starts at 1.0 (rest) and descends to
+    // 0.2 as amplitude rises.
+    engine.mount("elem_descend_01", node, [
+      { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [1.0, 0.2], curve: "linear" } },
+    ]);
+    assert.equal(node.style.opacity, "1");
   });
 
   t("late mount seeds lerper from bus.last (no 50-ms rest before first update)", () => {
