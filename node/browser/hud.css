@@ -1,0 +1,166 @@
+/* Code-stream HUD — low-contrast "BTS terminal" overlay, readable on 1080p.
+   Deliberately muted so it does not compete with the stage. */
+
+:root {
+  --hud-bg: #0b0a08;
+  --hud-bg-block: rgba(18, 15, 12, 0.72);
+  --hud-fg: #c8bfae;
+  --hud-fg-dim: #6f6858;
+  --hud-key: #7a6e55;
+  --hud-val-str: #d9b06a;
+  --hud-val-num: #6fa6c2;
+  --hud-val-bool: #b28fc2;
+  --hud-val-null: #5c5548;
+  --hud-rule: #2a241d;
+  --hud-cycle: #e7c78a;
+  --hud-error: #c97d6d;
+  --hud-font: "JetBrains Mono", "Fira Code", "Menlo", "DejaVu Sans Mono", ui-monospace, monospace;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--hud-bg);
+  color: var(--hud-fg);
+  font-family: var(--hud-font);
+  font-size: 15px;
+  line-height: 1.5;
+  height: 100%;
+  overflow: hidden;
+}
+
+.hud-root {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 16px 20px 12px 20px;
+  gap: 10px;
+  background:
+    radial-gradient(ellipse at 50% 10%, rgba(30, 22, 16, 0.35) 0%, rgba(8, 6, 5, 0.92) 75%) ,
+    var(--hud-bg);
+}
+
+.hud-stream {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: #2a241d transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Fade out the very top so new content feels like it's rising out of shadow. */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
+}
+
+.hud-stream::-webkit-scrollbar { width: 6px; }
+.hud-stream::-webkit-scrollbar-thumb { background: #2a241d; border-radius: 3px; }
+
+.hud-block {
+  background: var(--hud-bg-block);
+  border-left: 2px solid var(--hud-rule);
+  padding: 8px 12px;
+  border-radius: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hud-run-start {
+  border-left-color: var(--hud-cycle);
+  color: var(--hud-fg-dim);
+}
+
+.hud-run-start-line {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.hud-run-end {
+  border-left-color: var(--hud-cycle);
+  color: var(--hud-fg-dim);
+  text-align: center;
+  font-size: 13px;
+}
+
+.hud-cycle-header {
+  border-left-color: var(--hud-cycle);
+  background: transparent;
+  padding: 10px 0 2px 0;
+  font-weight: 500;
+}
+
+.hud-cycle-label {
+  color: var(--hud-cycle);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+}
+
+.hud-cycle-status {
+  margin-left: 10px;
+  color: var(--hud-error);
+  font-size: 13px;
+}
+
+.hud-cycle-error {
+  border-left-color: var(--hud-error);
+  color: var(--hud-error);
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.hud-tool-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.hud-tool-meta {
+  color: var(--hud-fg-dim);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.hud-tool-name {
+  color: var(--hud-cycle);
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.hud-json {
+  margin: 4px 0 0 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--hud-fg);
+}
+
+.hud-k { color: var(--hud-key); }
+.hud-v { color: var(--hud-fg); }
+.hud-v-str { color: var(--hud-val-str); }
+.hud-v-num { color: var(--hud-val-num); }
+.hud-v-bool { color: var(--hud-val-bool); }
+.hud-v-null { color: var(--hud-val-null); }
+
+.hud-status {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 4px 2px 0 2px;
+  border-top: 1px solid var(--hud-rule);
+  font-size: 12px;
+  color: var(--hud-fg-dim);
+  letter-spacing: 0.04em;
+}
+
+.hud-status-mode { color: var(--hud-cycle); }
+.hud-status-clock { font-variant-numeric: tabular-nums; }
+.hud-status-state { font-style: italic; }
