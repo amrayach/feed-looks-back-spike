@@ -35,10 +35,12 @@ export function mapInputToOutput({ value, map }) {
   const [inLo, inHi] = map.in;
   const [outLo, outHi] = map.out;
   if (inHi === inLo) {
-    // Zero-width input range: behave as a threshold — values at or above
-    // the pivot snap to outHi, below snap to outLo. Lets authors gate a
-    // binding on hijaz_state==target via map.in=[3,3].
-    return value >= inLo ? outHi : outLo;
+    // Zero-width input range: exact-match gate. Only the pivot value
+    // produces outHi; everything else (below OR above) returns outLo.
+    // Rationale: collapsed map.in is used to gate a binding on a
+    // specific enum state — e.g. hijaz_state == "tahwil" → map.in=[3,3].
+    // Threshold semantics would wrongly fire on "aug2" (=4) as well.
+    return value === inLo ? outHi : outLo;
   }
   const lo = Math.min(inLo, inHi);
   const hi = Math.max(inLo, inHi);
@@ -146,12 +148,28 @@ if (isDirectNodeExecution) {
     assert.equal(mapInputToOutput({ value: 5, map }), 100);
   });
 
-  t("mapInputToOutput treats zero-width input as a threshold (supports hijaz_state gating)", () => {
-    // map.in=[3, 3] encodes "only fire when value >= 3"
+  t("mapInputToOutput treats zero-width input as exact-match (gates hijaz_state only on target)", () => {
+    // map.in=[3, 3] encodes "only fire when value === 3 (tahwil)".
+    // Above AND below the pivot return outLo — "aug2" (=4) must NOT
+    // trigger a tahwil-gated binding, which is what the old threshold
+    // semantics did.
     const map = { in: [3, 3], out: [0, 1], curve: "linear" };
-    assert.equal(mapInputToOutput({ value: 2, map }), 0);
-    assert.equal(mapInputToOutput({ value: 3, map }), 1);
-    assert.equal(mapInputToOutput({ value: 4, map }), 1);
+    assert.equal(mapInputToOutput({ value: 2, map }), 0); // below pivot
+    assert.equal(mapInputToOutput({ value: 3, map }), 1); // at pivot
+    assert.equal(mapInputToOutput({ value: 4, map }), 0); // above pivot — must NOT fire
+    // Continuous features with a collapsed range effectively never
+    // fire unless the value lands exactly on the pivot — that's the
+    // intended behavior for enum-gated bindings.
+    assert.equal(mapInputToOutput({ value: 2.9999, map }), 0);
+    assert.equal(mapInputToOutput({ value: 3.0001, map }), 0);
+  });
+
+  t("mapInputToOutput zero-width input respects the authored out tuple (not just [0,1])", () => {
+    // authors can map the gate to any output — verify we're not hardcoding.
+    const map = { in: [1, 1], out: [42, 99], curve: "linear" };
+    assert.equal(mapInputToOutput({ value: 0, map }), 42);
+    assert.equal(mapInputToOutput({ value: 1, map }), 99);
+    assert.equal(mapInputToOutput({ value: 2, map }), 42);
   });
 
   t("createLerper advances from 'from' to 'to' over durationMs under linear curve", () => {
