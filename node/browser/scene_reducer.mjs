@@ -243,17 +243,14 @@ export function createSceneReducer({
         break;
       case "sketch.background.set":
         if (p5Sandbox) {
-          // Background slot has a single implicit id; server-side retire
-          // patch precedes this when replacing. If the old background
-          // wasn't retired first (e.g. operator-side patch only), the
-          // sandbox's mountBackground idempotently replaces by slot.
-          // Sketch code travels over WS to the server (registered in
-          // sketchCodes), NOT through the browser — iframe loads it
-          // from /p5/sandbox. Host-side sketch_id is only used for
-          // local iframe tracking (retire, entries map).
-          const bgSketchId = `background_${Date.now()}`;
-          p5Sandbox.mountBackground({ sketch_id: bgSketchId });
-          currentBackgroundSketchId = bgSketchId;
+          // Server minted the sketch_id when applyToolCall(setP5Background)
+          // ran in scene_state; the patch carries it directly. Background
+          // and localized sketches now share the same id namespace, so
+          // retire patches target the same id end-to-end. A preceding
+          // sketch.retire patch (emitted when replacing) has already
+          // torn down the prior iframe by the time we mount here.
+          p5Sandbox.mountBackground({ sketch_id: parsed.sketch_id });
+          currentBackgroundSketchId = parsed.sketch_id;
         }
         break;
       case "sketch.add":
@@ -611,7 +608,7 @@ if (isDirectNodeExecution) {
     };
   }
 
-  t("sketch.background.set calls p5Sandbox.mountBackground with a host-side sketch_id (no code)", () => {
+  t("sketch.background.set calls p5Sandbox.mountBackground with the patch's sketch_id (Fix 6; no code)", () => {
     const documentLike = new FakeDocument();
     const mount = documentLike.createElement("div");
     const p5Sandbox = makeFakeP5Sandbox();
@@ -622,6 +619,7 @@ if (isDirectNodeExecution) {
     });
     reducer.applyPatch({
       type: "sketch.background.set",
+      sketch_id: "sketch_bg_42",
       code: "function draw(){}",
       audio_reactive: true,
     });
@@ -630,7 +628,9 @@ if (isDirectNodeExecution) {
     // iframe loads it from /p5/sandbox. Browser no longer forwards code
     // to mountBackground.
     assert.equal(p5Sandbox.mountBgCalls[0].code, undefined);
-    assert.match(p5Sandbox.mountBgCalls[0].sketch_id, /^background_/);
+    // The host uses the server-minted sketch_id directly — no more
+    // `background_${Date.now()}` synthesis.
+    assert.equal(p5Sandbox.mountBgCalls[0].sketch_id, "sketch_bg_42");
   });
 
   t("sketch.add calls p5Sandbox.mountLocalized with sketch_id/position/size (code routed via server)", () => {
