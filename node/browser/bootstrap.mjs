@@ -11,7 +11,14 @@ export function parseBootstrapSearch(search) {
   if (mode !== "precompute" && mode !== "live") {
     return { ok: false, error: "mode must be 'precompute' or 'live'" };
   }
-  return { ok: true, value: Object.freeze({ run_id, mode }) };
+  return {
+    ok: true,
+    value: Object.freeze({
+      run_id,
+      mode,
+      audio: params.get("audio") === "1",
+    }),
+  };
 }
 
 export function renderBootstrapError(documentLike, message) {
@@ -68,6 +75,12 @@ if (isDirectNodeExecution) {
     const parsed = parseBootstrapSearch("?run_id=20260423_220000&mode=precompute");
     assert.equal(parsed.ok, true);
     assert.equal(parsed.value.mode, "precompute");
+  });
+
+  t("parseBootstrapSearch accepts optional live stage audio flag", () => {
+    const parsed = parseBootstrapSearch("?run_id=20260423_220000&mode=live&audio=1");
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.value.audio, true);
   });
 
   t("parseBootstrapSearch rejects missing params", () => {

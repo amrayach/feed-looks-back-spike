@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { parseArgs } from "node:util";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
+import { copyFileSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -53,7 +53,7 @@ const CYCLE_STATUS = Object.freeze({
 const VALID_STOP_REASONS = new Set(["tool_use", "end_turn"]);
 
 function usage() {
-  return `Usage: node src/run_spike.mjs <corpus_dir> --config <name> [--cycles N:M] [--dry-run] [--feature-producer <python|none>]
+  return `Usage: node src/run_spike.mjs <corpus_dir> --config <name> [--cycles N:M] [--dry-run] [--feature-producer <python|none>] [--stage-audio <wav>]
        node src/run_spike.mjs --self-test
 
 Arguments:
@@ -62,6 +62,7 @@ Arguments:
   --cycles N:M    optional inclusive range of cycle indices (default: all)
   --dry-run       build packets and synthesize tool calls locally; do not call the API
                   (default: real API mode — spends credit)
+  --stage-audio   optional WAV to expose to the browser stage as /run/<id>/audio.wav
   --self-test     run inline self-tests for error handling and exit
 `;
 }
@@ -591,6 +592,23 @@ function detectStageMode(runDir) {
   return hasPrecomputedAudio && hasPrecomputedFeatures ? "precompute" : "live";
 }
 
+function appendQueryParam(urlString, key, value) {
+  const url = new URL(urlString);
+  url.searchParams.set(key, value);
+  return url.toString();
+}
+
+function prepareStageAudio({ sourcePath, runDir, copyFileImpl = copyFileSync }) {
+  if (!sourcePath) return null;
+  const resolvedSource = resolve(sourcePath);
+  if (!existsSync(resolvedSource)) {
+    throw new Error(`stage audio file does not exist: ${resolvedSource}`);
+  }
+  const destPath = join(runDir, "audio.wav");
+  copyFileImpl(resolvedSource, destPath);
+  return { sourcePath: resolvedSource, runPath: destPath };
+}
+
 // Phase 3 narrow diff: feature-producer spawn sits outside the cycle loop so
 // it does not collide with Phase 5's self-frame hook (which lives INSIDE the
 // loop body). Returns null in precompute / self-test / producer=none paths.
@@ -680,6 +698,8 @@ async function run(options) {
     startFeatureProducerImpl = startFeatureProducer,
     createSelfFrameCapturerImpl = createSelfFrameCapturer,
     loadMoodBoardImpl = loadMoodBoard,
+    stageAudioPath = null,
+    prepareStageAudioImpl = prepareStageAudio,
   } = options;
 
   const cycles = listCycleFiles(corpusDir).filter((c) => {
@@ -701,13 +721,17 @@ async function run(options) {
   const runId = timestampSlug();
   const runDir = join(outputRoot, `run_${runId}`);
   ensureDir(runDir);
+  const stageAudio = prepareStageAudioImpl({ sourcePath: stageAudioPath, runDir });
   const stageMode = detectStageMode(runDir);
 
   const client = mode === "real" ? makeClientImpl() : null;
   let liveHtmlPath = null;
   const stageServer = await createStageServerImpl();
   await stageServer.setCurrentRunContext({ runId, mode: stageMode, runDir });
-  const operatorUrl = stageServer.getOperatorUrl({ runId, mode: stageMode });
+  const baseOperatorUrl = stageServer.getOperatorUrl({ runId, mode: stageMode });
+  const operatorUrl = stageAudio
+    ? appendQueryParam(baseOperatorUrl, "audio", "1")
+    : baseOperatorUrl;
 
   const resolvedProducer = featureProducer ?? (stageMode === "live" && mode === "real" ? "python" : "none");
   const wsUrl = `ws://${stageServer.host}:${stageServer.port}/ws`;
@@ -763,6 +787,13 @@ async function run(options) {
       config: configName,
       model,
       mode,
+      stage_audio: stageAudio
+        ? {
+            enabled: true,
+            source_path: stageAudio.sourcePath,
+            run_path: stageAudio.runPath,
+          }
+        : { enabled: false },
       corpus_dir: corpusDir,
       cycles_total: cycles.length,
       cycles_range: cyclesRange,
@@ -1390,6 +1421,36 @@ async function runSelfTests() {
     assert.equal(existsSync(join(runDir, "final_scene.html")), true);
   });
 
+  await t("run copies optional stage audio and advertises it in the live stage URL", async () => {
+    const tempRoot = freshTempRoot("run-spike-stage-audio");
+    const corpusDir = join(tempRoot, "corpus");
+    const outputRoot = join(tempRoot, "output");
+    const stageAudioPath = join(tempRoot, "sample.wav");
+    writeTestCorpus(corpusDir, 1);
+    writeFileSync(stageAudioPath, "fake wav bytes");
+
+    const { operatorUrl, runDir, summary } = await run({
+      corpusDir,
+      configName: "config_a",
+      cyclesRange: null,
+      mode: "dry-run",
+      outputRoot,
+      hijazBaseOverride: "self-test hijaz base",
+      mediumRulesOverride: "self-test medium rules",
+      toolsOverride: [],
+      modelOverride: "claude-opus-4-7",
+      sleepImpl: async () => {},
+      createStageServerImpl: async () => makeStageServerStub(),
+      stageAudioPath,
+    });
+
+    assert.equal(readFileSync(join(runDir, "audio.wav"), "utf8"), "fake wav bytes");
+    assert.match(operatorUrl, /\?run_id=.*&mode=live&audio=1$/);
+    assert.equal(summary.stage_audio.enabled, true);
+    assert.equal(summary.stage_audio.source_path, stageAudioPath);
+    assert.equal(summary.stage_audio.run_path, join(runDir, "audio.wav"));
+  });
+
   await t("run finalizes partial artifacts after SIGINT and stops before the next cycle", async () => {
     const tempRoot = freshTempRoot("run-spike-sigint");
     const corpusDir = join(tempRoot, "corpus");
@@ -1660,6 +1721,7 @@ async function main() {
         cycles: { type: "string" },
         "dry-run": { type: "boolean", default: false },
         "feature-producer": { type: "string" },
+        "stage-audio": { type: "string" },
       },
     });
   } catch (err) {
@@ -1675,8 +1737,9 @@ async function main() {
   const configName = values.config;
   const cyclesRange = parseCyclesRange(values.cycles);
   const featureProducer = values["feature-producer"] ?? null;
+  const stageAudioPath = values["stage-audio"] ? resolve(values["stage-audio"]) : null;
 
-  await run({ corpusDir, configName, cyclesRange, mode, featureProducer });
+  await run({ corpusDir, configName, cyclesRange, mode, featureProducer, stageAudioPath });
 }
 
 if (process.argv.includes("--self-test")) {

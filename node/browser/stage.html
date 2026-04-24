@@ -55,8 +55,20 @@
       const mount = document.getElementById("stage-root");
       const audio = document.getElementById("stage-audio");
 
-      if (bootstrap.mode === "precompute") {
+      const stageHasAudio = bootstrap.mode === "precompute" || bootstrap.audio === true;
+      if (stageHasAudio) {
         audio.src = `/run/${bootstrap.run_id}/audio.wav`;
+        audio.autoplay = true;
+        audio.addEventListener("canplay", () => {
+          audio.play().catch(() => {
+            // Browser autoplay policies often require the first user gesture.
+          });
+        }, { once: true });
+        const unlockAudio = () => {
+          audio.play().catch(() => {});
+        };
+        document.addEventListener("pointerdown", unlockAudio, { once: true });
+        document.addEventListener("keydown", unlockAudio, { once: true });
       } else {
         audio.remove();
       }
