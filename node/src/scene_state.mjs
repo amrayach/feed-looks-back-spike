@@ -1,11 +1,24 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+// Image TTL (seconds). Images now fade by default so the scene stays
+// alive as new figurative anchors arrive — rather than accumulating
+// indefinitely until Opus calls fadeElement. Set null by passing
+// `lifetime_s: null` explicitly from a tool call; permanence is still
+// reachable but is now a deliberate request, not the default.
+export const IMAGE_DEFAULT_TTL_S = 25;
+
+// Milliseconds the browser uses for the image opacity-decay animation.
+// Longer than the standard DEFAULT_PATCH_FADE_DURATION_MS so an image's
+// exit reads as a slow dissolve rather than a blink. Consumed by the
+// emitter's auto-fade path; not used for explicit fadeElement calls.
+export const IMAGE_AUTO_FADE_DURATION_MS = 8000;
+
 // null = permanent, only fades via explicit fadeElement.
 export const DEFAULT_LIFETIMES = Object.freeze({
   text: null,
   svg: 35,
-  image: null,
+  image: IMAGE_DEFAULT_TTL_S,
   background: null,
 });
 
@@ -15,6 +28,16 @@ export const DEFAULT_LIFETIMES = Object.freeze({
 // "fading next cycle" in the summary; by the next cycle it is gone from
 // the active view.
 export const AUTO_FADE_OVERLAP_S = 5;
+
+// Type → visible element attribute used when the emitter decides on the
+// fade duration for an auto-fading element. Keeping this in scene_state
+// (rather than run_spike) co-locates it with the lifetime defaults it
+// pairs with, so a future type addition only has to touch one file.
+export function resolveAutoFadeDurationMs(element) {
+  if (!element || typeof element !== "object") return null;
+  if (element.type === "image") return IMAGE_AUTO_FADE_DURATION_MS;
+  return null;
+}
 
 export const SVG_MARKUP_MAX_SUMMARY_CHARS = 100;
 
@@ -151,7 +174,14 @@ export function setP5Background(state, { code, audio_reactive }) {
 // first (returned as retired_id). The caller emits sketch.retire (if
 // retired_id) BEFORE the sketch.add patch to keep the browser-side
 // slot bookkeeping coherent.
-export function addP5SketchSlot(state, { position, size, code, audio_reactive, lifetime_s }) {
+export function addP5SketchSlot(state, {
+  position,
+  size,
+  code,
+  audio_reactive,
+  lifetime_s,
+  layer = null,
+}) {
   if (!Array.isArray(state.p5_sketches)) state.p5_sketches = [];
   let retired_id = null;
   if (state.p5_sketches.length >= 3) {
@@ -161,7 +191,7 @@ export function addP5SketchSlot(state, { position, size, code, audio_reactive, l
   const sketch_id = mintSketchId(state);
   const resolvedLifetime =
     typeof lifetime_s === "number" && Number.isFinite(lifetime_s) ? lifetime_s : null;
-  state.p5_sketches.push({
+  const entry = {
     sketch_id,
     position,
     size,
@@ -170,7 +200,13 @@ export function addP5SketchSlot(state, { position, size, code, audio_reactive, l
     lifetime_s: resolvedLifetime,
     created_at_cycle: state.current_cycle_index,
     created_at_elapsed_s: state.current_elapsed_s,
-  });
+  };
+  // Shape-stable: only attach layer when provided (non-layered localized
+  // sketches keep the pre-v6.2 JSON shape).
+  if (typeof layer === "string" && layer.length > 0) {
+    entry.layer = layer;
+  }
+  state.p5_sketches.push(entry);
   recordActivity(state, "p5_sketch", 1);
   return { sketch_id, retired_id };
 }
@@ -212,7 +248,14 @@ export function addCompositionGroup(state, { group_label }) {
 
 export const GROUP_ID_PATTERN = /^group_\d{4}$/;
 
-export function addElement(state, { type, content, lifetime_s, reactivity = null }) {
+export function addElement(state, {
+  type,
+  content,
+  lifetime_s,
+  reactivity = null,
+  layer = null,
+  motion = null,
+}) {
   const resolvedLifetime =
     lifetime_s === null
       ? null
@@ -236,6 +279,16 @@ export function addElement(state, { type, content, lifetime_s, reactivity = null
   // snapshotCycle JSON stable for anyone diffing the output directory).
   if (Array.isArray(reactivity) && reactivity.length > 0) {
     element.reactivity = reactivity;
+  }
+  // Only attach layer + motion when provided, same byte-stability rule:
+  // an element that authors no layer or motion preset stays shape-stable
+  // with pre-Phase-4 JSON. Operator_views must NOT observe layer/motion
+  // (invariant 7) — they are runtime-only concerns like reactivity.
+  if (typeof layer === "string" && layer.length > 0) {
+    element.layer = layer;
+  }
+  if (motion && typeof motion === "object" && typeof motion.preset === "string") {
+    element.motion = motion;
   }
   state.elements.push(element);
   if (!content?.composition_group_id) recordActivity(state, "placed", 1);
@@ -831,7 +884,7 @@ if (isDirectNodeExecution) {
     assert.equal(s.elements.length, 2);
   });
 
-  t("addElement uses Session F default lifetime per type (text/image permanent, svg=35)", () => {
+  t("addElement uses per-type default lifetime (text permanent, svg=35, image=IMAGE_DEFAULT_TTL_S)", () => {
     const s = createInitialState();
     beginCycle(s, { cycleIndex: 0, elapsedTotalS: 10 });
     const tid = addElement(s, {
@@ -853,6 +906,23 @@ if (isDirectNodeExecution) {
     assert.equal(te.fades_at_elapsed_s, null);
     assert.equal(ve.lifetime_s, 35);
     assert.equal(ve.fades_at_elapsed_s, 45);
+    // v6.2: images are no longer permanent by default. They fade over
+    // IMAGE_DEFAULT_TTL_S seconds unless the caller explicitly passes
+    // lifetime_s: null. This is the lifecycle that gives the scene its
+    // "breathing" quality — new figurative anchors replace old ones.
+    assert.equal(ie.lifetime_s, IMAGE_DEFAULT_TTL_S);
+    assert.equal(ie.fades_at_elapsed_s, 10 + IMAGE_DEFAULT_TTL_S);
+  });
+
+  t("addElement with explicit lifetime_s: null keeps image permanent (escape hatch)", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 10 });
+    const iid = addElement(s, {
+      type: "image",
+      content: { query: "permanent", position: "background" },
+      lifetime_s: null,
+    });
+    const ie = s.elements.find((e) => e.element_id === iid);
     assert.equal(ie.lifetime_s, null);
     assert.equal(ie.fades_at_elapsed_s, null);
   });
@@ -978,7 +1048,7 @@ if (isDirectNodeExecution) {
     assert.equal(el.faded, true);
   });
 
-  t("autoFade never removes permanent elements", () => {
+  t("autoFade never removes explicitly-permanent elements (lifetime_s: null)", () => {
     const s = createInitialState();
     beginCycle(s, { cycleIndex: 0, elapsedTotalS: 10 });
     const textId = addElement(s, {
@@ -988,11 +1058,75 @@ if (isDirectNodeExecution) {
     const imageId = addElement(s, {
       type: "image",
       content: { query: "permanent image", position: "background" },
+      lifetime_s: null,  // v6.2: images need explicit null to stay permanent
     });
     beginCycle(s, { cycleIndex: 30, elapsedTotalS: 155 });
     autoFade(s);
     assert.equal(s.elements.find((e) => e.element_id === textId).faded, false);
     assert.equal(s.elements.find((e) => e.element_id === imageId).faded, false);
+  });
+
+  t("autoFade fades default-lifetime images after IMAGE_DEFAULT_TTL_S", () => {
+    // v6.2 regression: an image added at t=10s without explicit lifetime_s
+    // must auto-fade once current_elapsed_s + AUTO_FADE_OVERLAP_S reaches
+    // the TTL boundary.
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 10 });
+    const imageId = addElement(s, {
+      type: "image",
+      content: { query: "ephemeral image", position: "background" },
+    });
+    // Just past created_at + TTL (10 + 25 = 35).
+    beginCycle(s, { cycleIndex: 10, elapsedTotalS: 36 });
+    autoFade(s);
+    assert.equal(s.elements.find((e) => e.element_id === imageId).faded, true);
+  });
+
+  t("resolveAutoFadeDurationMs returns IMAGE_AUTO_FADE_DURATION_MS for images, null otherwise", () => {
+    assert.equal(resolveAutoFadeDurationMs({ type: "image" }), IMAGE_AUTO_FADE_DURATION_MS);
+    assert.equal(resolveAutoFadeDurationMs({ type: "text" }), null);
+    assert.equal(resolveAutoFadeDurationMs({ type: "svg" }), null);
+    assert.equal(resolveAutoFadeDurationMs(null), null);
+    assert.equal(resolveAutoFadeDurationMs(undefined), null);
+  });
+
+  t("addElement stores layer + motion top-level when provided; omits them otherwise", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 10 });
+    const layered = addElement(s, {
+      type: "image",
+      content: { query: "lamp glow", position: "background" },
+      layer: "background",
+      motion: { preset: "breathe", intensity: 0.6 },
+    });
+    const plain = addElement(s, {
+      type: "text",
+      content: { content: "plain", position: "c", style: "s" },
+    });
+    const withLayer = s.elements.find((e) => e.element_id === layered);
+    const withoutLayer = s.elements.find((e) => e.element_id === plain);
+    assert.equal(withLayer.layer, "background");
+    assert.equal(withLayer.motion.preset, "breathe");
+    assert.equal(withLayer.motion.intensity, 0.6);
+    // Shape stability: non-layered elements keep the pre-v6.2 shape.
+    assert.equal("layer" in withoutLayer, false);
+    assert.equal("motion" in withoutLayer, false);
+  });
+
+  t("addP5SketchSlot stores layer top-level when provided; omits it otherwise", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const a = addP5SketchSlot(s, {
+      position: "top-left", size: "small", code: "", audio_reactive: true,
+      layer: "midground",
+    });
+    const b = addP5SketchSlot(s, {
+      position: "center", size: "medium", code: "", audio_reactive: false,
+    });
+    const withLayer = s.p5_sketches.find((x) => x.sketch_id === a.sketch_id);
+    const withoutLayer = s.p5_sketches.find((x) => x.sketch_id === b.sketch_id);
+    assert.equal(withLayer.layer, "midground");
+    assert.equal("layer" in withoutLayer, false);
   });
 
   t("fadeElement still removes a permanent element explicitly", () => {
