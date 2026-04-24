@@ -80,6 +80,7 @@ export function createSceneReducer({
   readyTarget = documentLike?.body ?? mount,
   setTimeoutImpl = globalThis.setTimeout,
   bindingEngine = null,
+  p5Sandbox = null,
 } = {}) {
   if (!mount) throw new Error("mount is required");
 
@@ -110,6 +111,8 @@ export function createSceneReducer({
   const elementSpecs = new Map();
   const groupNodes = new Map();
   const groupSpecs = new Map();
+  const localizedSketchIds = [];
+  let currentBackgroundSketchId = null;
   let replayState = "initial";
 
   function placeNode(elementSpec, node) {
@@ -238,10 +241,48 @@ export function createSceneReducer({
         replayState = "synced";
         root.dataset.replayState = replayState;
         break;
-      case "prompt.replace":
       case "sketch.background.set":
+        if (p5Sandbox) {
+          // Background slot has a single implicit id; server-side retire
+          // patch precedes this when replacing. If the old background
+          // wasn't retired first (e.g. operator-side patch only), the
+          // sandbox's mountBackground idempotently replaces by slot.
+          const bgSketchId = `background_${Date.now()}`;
+          p5Sandbox.mountBackground({ sketch_id: bgSketchId, code: parsed.code });
+          currentBackgroundSketchId = bgSketchId;
+        }
+        break;
       case "sketch.add":
+        if (p5Sandbox) {
+          // Belt-and-suspenders N=3: if a 4th add arrives without a
+          // preceding retire, evict the oldest locally and warn.
+          if (localizedSketchIds.length >= 3) {
+            const evicted = localizedSketchIds.shift();
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn(`[scene_reducer] N=3 cap exceeded; evicting ${evicted}`);
+            }
+            p5Sandbox.retireSketch(evicted);
+          }
+          localizedSketchIds.push(parsed.sketch_id);
+          p5Sandbox.mountLocalized({
+            sketch_id: parsed.sketch_id,
+            position: parsed.position,
+            size: parsed.size,
+            code: parsed.code,
+          });
+        }
+        break;
       case "sketch.retire":
+        if (p5Sandbox) {
+          p5Sandbox.retireSketch(parsed.sketch_id);
+          const idx = localizedSketchIds.indexOf(parsed.sketch_id);
+          if (idx !== -1) localizedSketchIds.splice(idx, 1);
+          if (currentBackgroundSketchId === parsed.sketch_id) {
+            currentBackgroundSketchId = null;
+          }
+        }
+        break;
+      case "prompt.replace":
         break;
     }
   }
@@ -553,6 +594,110 @@ if (isDirectNodeExecution) {
     });
     reducer.applyPatch({ type: "element.remove", element_id: "elem_0300" });
     assert.deepEqual(bindingEngine.unmountedIds, ["elem_0300"]);
+  });
+
+  function makeFakeP5Sandbox() {
+    return {
+      mountBgCalls: [],
+      mountLocalizedCalls: [],
+      retireCalls: [],
+      mountBackground(spec) { this.mountBgCalls.push(spec); },
+      mountLocalized(spec) { this.mountLocalizedCalls.push(spec); },
+      retireSketch(id) { this.retireCalls.push(id); },
+      dispose() {},
+    };
+  }
+
+  t("sketch.background.set calls p5Sandbox.mountBackground", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    reducer.applyPatch({
+      type: "sketch.background.set",
+      code: "function draw(){}",
+      audio_reactive: true,
+    });
+    assert.equal(p5Sandbox.mountBgCalls.length, 1);
+    assert.equal(p5Sandbox.mountBgCalls[0].code, "function draw(){}");
+  });
+
+  t("sketch.add calls p5Sandbox.mountLocalized with full spec", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    reducer.applyPatch({
+      type: "sketch.add",
+      sketch_id: "sketch_0003",
+      position: "top-right",
+      size: "small",
+      code: "noop()",
+      audio_reactive: false,
+      lifetime_s: null,
+    });
+    assert.equal(p5Sandbox.mountLocalizedCalls.length, 1);
+    assert.equal(p5Sandbox.mountLocalizedCalls[0].sketch_id, "sketch_0003");
+    assert.equal(p5Sandbox.mountLocalizedCalls[0].position, "top-right");
+  });
+
+  t("sketch.retire calls p5Sandbox.retireSketch and drops from tracked list", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    reducer.applyPatch({
+      type: "sketch.add",
+      sketch_id: "sketch_0010", position: "center", size: "small",
+      code: "", audio_reactive: false, lifetime_s: null,
+    });
+    reducer.applyPatch({ type: "sketch.retire", sketch_id: "sketch_0010" });
+    assert.deepEqual(p5Sandbox.retireCalls, ["sketch_0010"]);
+  });
+
+  t("belt-and-suspenders N=3: a 4th sketch.add evicts the oldest locally", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const p5Sandbox = makeFakeP5Sandbox();
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+      p5Sandbox,
+    });
+    // Suppress the expected console.warn for the overflow case.
+    const prevWarn = console.warn;
+    console.warn = () => {};
+    try {
+      for (const id of ["s1", "s2", "s3"]) {
+        reducer.applyPatch({
+          type: "sketch.add",
+          sketch_id: id, position: "center", size: "small",
+          code: "", audio_reactive: false, lifetime_s: null,
+        });
+      }
+      // 4th without a preceding retire patch:
+      reducer.applyPatch({
+        type: "sketch.add",
+        sketch_id: "s4", position: "center", size: "small",
+        code: "", audio_reactive: false, lifetime_s: null,
+      });
+    } finally {
+      console.warn = prevWarn;
+    }
+    assert.equal(p5Sandbox.mountLocalizedCalls.length, 4);
+    assert.deepEqual(p5Sandbox.retireCalls, ["s1"]);
   });
 
   t("composition_group.fade unmounts every member id", () => {
