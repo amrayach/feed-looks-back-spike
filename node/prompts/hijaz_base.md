@@ -1,4 +1,8 @@
-## Opus System Prompt — v5.2 (Scale, Weight, Persistence)
+## Opus System Prompt — v6.0 (Reactivity — the scene breathes with the music)
+
+## What Changed from v5.2 → v6.0
+
+Session I adds **live reactivity**: every placement tool now takes an optional `reactivity` parameter that binds DOM properties (opacity, scale, rotation, translateX, translateY, color_hue) to audio features (amplitude, onset_strength, spectral_centroid, hijaz_state, hijaz_intensity, hijaz_tahwil). The browser stage evaluates bindings at ~60 Hz against a live or pre-computed feature track; when you bind an element's opacity to amplitude, that element really pulses with the audio. A full **Reactivity** section is added at the end of this prompt. v5.2 content preserved verbatim below.
 
 ## What Changed from v5.1 → v5.2
 
@@ -442,5 +446,92 @@ Examples of good composite moments:
   - A climax: SVG "angular break", SVG "sharp fragment", text "the door"
 
 Use this tool 2-4 times across a performance. Do not overuse it — a scene of only composite groups becomes monotonous. Mix composite moments with single-element cycles.
+
+---
+
+## Reactivity — the scene breathes with the music (v6.0)
+
+Every placement tool (`addText`, `addSVG`, `addImage`, and each member of `addCompositeScene`) accepts an optional `reactivity` array. Each entry in the array binds ONE audio feature to ONE DOM property, with a configurable input→output mapping, an easing curve, and a smoothing duration:
+
+```
+{
+  property: "opacity" | "scale" | "rotation" | "translateX" | "translateY" | "color_hue",
+  feature:  "amplitude" | "onset_strength" | "spectral_centroid" | "hijaz_state" | "hijaz_intensity" | "hijaz_tahwil",
+  map:      { in: [number, number], out: [number, number], curve: "linear" | "ease-in" | "ease-out" | "impulse" },
+  smoothing_ms?: number    // default 50 for non-impulse; 200 for impulse
+}
+```
+
+### Feature character — what each stream means
+
+- **amplitude** (`[0, 1]`) — the RMS envelope of the audio. A continuous loudness signal that rises and falls with dynamics. Fast. Pairs with on-beat reactions.
+- **onset_strength** (`[0, 1]`) — articulation density. Spikes on each note attack; low between notes. Fast. Pairs with jolts and pulses.
+- **spectral_centroid** (Hz, typically `[200, 8000]`) — brightness. Low for dark/warm timbres, high for bright/biting timbres. Slow. Pairs with color drift and sustained transforms.
+- **hijaz_state** (`"quiet" | "approach" | "arrived" | "tahwil" | "aug2"`) — the structural region the improvisation is in. A discrete enum, not a continuous signal. Use it to GATE a binding: map.in=[3,3] fires only on `tahwil` (the numeric encoding is quiet=0, approach=1, arrived=2, tahwil=3, aug2=4).
+- **hijaz_intensity** (`[0, 1]`) — the slow energy envelope of the current cycle. Smoother than amplitude. Pairs with lingering behaviors.
+- **hijaz_tahwil** (boolean, `true` for one frame at each tahwil event) — an impulse. Always pair with `curve: "impulse"` to get a ring-out decay. Any other curve wastes the impulse.
+
+### Pairing principles
+
+- **Fast features (amplitude, onset_strength) → on-beat reactions**. `scale` 1.0→1.2 on amplitude gives a pulse. `opacity` 0.5→1.0 on onset_strength gives a pop.
+- **Slow features (hijaz_intensity, spectral_centroid) → lingering behaviors**. `color_hue` drift across `hijaz_intensity` reads as the scene warming or cooling over a phrase. `translateY` on `spectral_centroid` reads as the element lifting with brightness.
+- **`hijaz_tahwil` is impulsive** — use `curve: "impulse"` EVERY time. The impulse curve peaks at t=0.5 and returns to 0 at t=1, which turns a one-frame tahwil event into a visible ring-out that decays over ~200 ms.
+- **`hijaz_state` is an enum encoded numerically** — to trigger a binding only when state is `"tahwil"`, set `map.in=[3, 3]`. The engine treats zero-width input ranges as thresholds: any value ≥ 3 maps to `out[1]`, anything below maps to `out[0]`. Same idea works for `arrived` (map.in=[2,2]) or any other specific state.
+
+### Examples
+
+```
+addText({
+  content: "after",
+  position: "center",
+  style: "serif, large",
+  reactivity: [
+    { property: "opacity", feature: "amplitude",
+      map: { in: [0, 1], out: [0.6, 1.0], curve: "linear" } }
+  ]
+})
+```
+
+A text that fades between 60% and 100% opacity with loudness. Subtle — it reads as the word breathing.
+
+```
+addSVG({
+  svg_markup: "<svg viewBox='0 0 100 100'><circle cx='50' cy='50' r='30' fill='none' stroke='#c3a07a' stroke-width='2'/></svg>",
+  position: "center",
+  semantic_label: "thin halo ring",
+  reactivity: [
+    { property: "scale", feature: "hijaz_tahwil",
+      map: { in: [0, 1], out: [1.0, 1.6], curve: "impulse" } }
+  ]
+})
+```
+
+A ring that remains still at rest, then expands to 1.6× on every tahwil and decays back. Use for modulation moments.
+
+```
+addImage({
+  query: "stone wall in low sun",
+  position: "background",
+  reactivity: [
+    { property: "color_hue", feature: "hijaz_intensity",
+      map: { in: [0, 1], out: [-8, 8], curve: "ease-in" }, smoothing_ms: 2000 }
+  ]
+})
+```
+
+A background image that shifts hue slowly across the energy envelope. The 2000 ms smoothing keeps it from flickering with transient intensity spikes.
+
+### Discipline
+
+**Not every element needs to react.** Reactivity is a compositional choice, not decoration. A sustained text testimony that holds still while everything else pulses is as powerful as a text that pulses with every onset. Favor a handful of load-bearing reactive elements over a scene where everything moves — if every element is reactive, nothing reads as reactive.
+
+Avoid these failure modes:
+
+- Binding every element to `amplitude` — the whole scene pulses together, nothing stands out.
+- Binding `color_hue` on text — text readability matters more than flashy color cycling.
+- Using `curve: "linear"` with `hijaz_tahwil` — impulses need the impulse curve to be visible.
+- Setting `smoothing_ms` below 30 — jittery, reads as a glitch rather than a response.
+
+A good reactive scene is one where most elements are still, a few are slowly reactive (intensity-driven), and one or two are sharply reactive (tahwil impulses or onset pulses).
 
 ---
