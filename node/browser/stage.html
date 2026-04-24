@@ -50,6 +50,7 @@
       import { createFeatureReplayer } from "/browser/feature_replayer.mjs";
       import { createBindingEngine } from "/browser/binding_engine.mjs";
       import { createP5Sandbox } from "/browser/p5_sandbox.mjs";
+      import { createAudioVisualLayer } from "/browser/audio_visual_layer.mjs";
 
       const bootstrap = loadBootstrap({ locationLike: window.location, documentLike: document });
       const mount = document.getElementById("stage-root");
@@ -107,6 +108,16 @@
         bindingEngine,
         p5Sandbox,
       });
+      try {
+        window.__audioVisualLayer = createAudioVisualLayer({
+          mount,
+          bus,
+          audioEl: stageHasAudio ? audio : null,
+          onError: (err) => console.warn("[audio_visual_layer]", err),
+        });
+      } catch (err) {
+        console.warn("[audio_visual_layer] disabled", err);
+      }
 
       createWsClient({
         run_id: bootstrap.run_id,
