@@ -143,7 +143,7 @@ Served statically by `stage_server.mjs` at the same port as the WebSocket endpoi
 - `/` → `node/browser/stage.html`
 - `/browser/*.mjs` → `node/browser/*.mjs`
 - `/shared/*.mjs` → `node/src/*.mjs` (narrow allowlist: `patch_protocol.mjs`, `binding_easing.mjs` — the two modules consumed by both Node and the browser). Serving only the allowlist avoids accidentally exposing `opus_client.mjs` or other Node-only code.
-- `/vendor/p5.min.js` → read once from `node_modules/p5/lib/p5.min.js` at startup; cached in memory; served to any consumer. Used by stage_server when generating p5-iframe srcdoc (see §7.3) so sketches have no external-CDN dependency during performance.
+- `/vendor/p5/p5.min.js` → read once from `node_modules/p5/lib/p5.min.js` at startup; cached in memory; served to any consumer. Used by stage_server when generating p5-iframe srcdoc (see §7.3) so sketches have no external-CDN dependency during performance.
 - `/run/<run_id>/audio.wav` → `node/output/<run_id>/audio.wav` (pre-recorded mode source audio; file copied or symlinked into the run directory at run start)
 - `/run/<run_id>/features_track.json` → `node/output/<run_id>/features_track.json` (Python `stream_features.py --mode precompute` output; includes ALL features — amplitude, onset_strength, spectral_centroid, and Hijaz events)
 - `/image_cache/<filename>` → `node/image_cache/<filename>` (shared across runs; this is where `image_fetch.mjs` already writes — `DEFAULT_CACHE_DIR = join(NODE_ROOT, "image_cache")` at `image_fetch.mjs:9`; files named `<sha256-16>.jpg` per `image_fetch.mjs:92`). No per-run copy or symlink needed — `image_resolver.mjs` returns browser URLs in this shape directly, so `element.add` patches reference stable, deduplicated paths.
