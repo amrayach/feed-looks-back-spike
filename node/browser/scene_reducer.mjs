@@ -1,4 +1,4 @@
-const { PatchSchema } = await import(
+const { PatchSchema, LAYER_DEFAULTS_BY_TYPE } = await import(
   import.meta.url.startsWith("file:")
     ? "../src/patch_protocol.mjs"
     : "/shared/patch_protocol.mjs"
@@ -16,6 +16,39 @@ const {
     : "/shared/scene_layout.mjs"
 );
 
+// Layer → z-index band. Keeping the numbers widely spaced so future
+// layers can slot in without renumbering; the existing RECT_CSS "z"
+// values from scene_layout are on the 0..5 range, so we keep those
+// intact (they're per-slot accents) and apply the layer z-index on
+// the wrapper element above them.
+const LAYER_Z_INDEX = Object.freeze({
+  background: 10,
+  midground: 100,
+  foreground: 1000,
+});
+
+function resolveLayerForElement(elementSpec) {
+  if (elementSpec?.layer && LAYER_Z_INDEX[elementSpec.layer] !== undefined) {
+    return elementSpec.layer;
+  }
+  return LAYER_DEFAULTS_BY_TYPE[elementSpec?.type] ?? "midground";
+}
+
+function resolveLayerForSketch(kind, spec) {
+  // kind ∈ "background" | "localized". Localized sketches default to
+  // the background band (sits behind DOM) but an explicit layer on the
+  // patch wins.
+  if (spec?.layer && LAYER_Z_INDEX[spec.layer] !== undefined) {
+    return spec.layer;
+  }
+  if (kind === "background") return LAYER_DEFAULTS_BY_TYPE.p5_background;
+  return LAYER_DEFAULTS_BY_TYPE.p5_localized;
+}
+
+function zIndexForLayer(layer) {
+  return LAYER_Z_INDEX[layer] ?? LAYER_Z_INDEX.midground;
+}
+
 function createStyle(initial = "") {
   return { cssText: initial };
 }
@@ -32,11 +65,21 @@ function makeElementNode(documentLike, elementSpec) {
   const node = documentLike.createElement("div");
   node.dataset.elementId = elementSpec.element_id;
   node.dataset.elementType = elementSpec.type;
+  // v6.2: z-order layer token. Missing layer resolves to the per-type
+  // default (image → midground, text/svg → foreground). Stamped into
+  // the dataset so FakeDocument + real-DOM inspections agree.
+  const resolvedLayer = resolveLayerForElement(elementSpec);
+  node.dataset.layer = resolvedLayer;
+  const layerZ = zIndexForLayer(resolvedLayer);
   node.style = node.style ?? createStyle();
+  // v6.2: images get a long opacity transition so auto-fade-out reads
+  // as a dissolve. Other element types keep the short default.
+  const transitionDuration = elementSpec.type === "image" ? "8s" : "0.3s";
   node.style.cssText = [
     "position: absolute",
     "box-sizing: border-box",
-    "transition: opacity 0.3s ease",
+    `z-index: ${layerZ}`,
+    `transition: opacity ${transitionDuration} ease`,
   ].join("; ");
 
   if (elementSpec.type === "text") {
@@ -129,12 +172,21 @@ export function createSceneReducer({
     nodes.set(elementSpec.element_id, node);
     elementSpecs.set(elementSpec.element_id, elementSpec);
     placeNode(elementSpec, node);
-    // Wire reactivity AFTER the node is inserted so binding_engine can
-    // write style.transform / style.opacity / style.filter. Engine's
-    // mount also de-dupes by element_id so a replayed element.add won't
-    // double-subscribe.
-    if (bindingEngine && Array.isArray(elementSpec.reactivity) && elementSpec.reactivity.length > 0) {
-      bindingEngine.mount(elementSpec.element_id, node, elementSpec.reactivity);
+    // Wire reactivity + motion AFTER the node is inserted so
+    // binding_engine can write style.transform / style.opacity /
+    // style.filter. Engine's mount also de-dupes by element_id so a
+    // replayed element.add won't double-subscribe. Motion is an
+    // independent cue: an element may carry reactivity only, motion
+    // only, or both — the engine handles all three cases.
+    const hasReactivity = Array.isArray(elementSpec.reactivity) && elementSpec.reactivity.length > 0;
+    const hasMotion = elementSpec.motion && typeof elementSpec.motion === "object";
+    if (bindingEngine && (hasReactivity || hasMotion)) {
+      bindingEngine.mount(
+        elementSpec.element_id,
+        node,
+        hasReactivity ? elementSpec.reactivity : null,
+        hasMotion ? elementSpec.motion : null,
+      );
     }
   }
 
@@ -162,7 +214,17 @@ export function createSceneReducer({
       }
     };
     if (durationMs > 0) {
-      node.style.cssText += "; opacity: 0;";
+      // v6.2: the patch's duration_ms is the authoritative fade length.
+      // Rewrite the CSS `transition: opacity ... ease` line to match so
+      // the opacity decay animates over exactly `durationMs`. Without
+      // this, an image whose mount baked in an 8 s transition would
+      // blink out of a 400 ms manual fadeElement call (transition too
+      // slow to finish before removeNow fires).
+      const rewritten = node.style.cssText.replace(
+        /transition:\s*opacity[^;]*;?/,
+        `transition: opacity ${durationMs}ms ease;`,
+      );
+      node.style.cssText = rewritten + "; opacity: 0;";
       if (typeof setTimeoutImpl === "function") setTimeoutImpl(removeNow, durationMs);
       else removeNow();
     } else {
@@ -767,6 +829,159 @@ if (isDirectNodeExecution) {
     }
     assert.equal(p5Sandbox.mountLocalizedCalls.length, 4);
     assert.deepEqual(p5Sandbox.retireCalls, ["s1"]);
+  });
+
+  t("element.add applies z-index by explicit layer token", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_bg",
+        type: "image",
+        content: { query: "x", position: "background", browser_url: null },
+        lifetime_s: null,
+        composition_group_id: null,
+        layer: "background",
+      },
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_fg",
+        type: "text",
+        content: { content: "on top", position: "center", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: null,
+        layer: "foreground",
+      },
+    });
+    const freeLayer = mount.children[0];
+    const bgNode = freeLayer.children[0];
+    const fgNode = freeLayer.children[1];
+    assert.match(bgNode.style.cssText, /z-index:\s*10\b/);
+    assert.match(fgNode.style.cssText, /z-index:\s*1000\b/);
+    assert.equal(bgNode.dataset.layer, "background");
+    assert.equal(fgNode.dataset.layer, "foreground");
+  });
+
+  t("element.add falls back to per-type layer default when no layer supplied (image→midground, text→foreground)", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_img",
+        type: "image",
+        content: { query: "lamp", position: "background", browser_url: null },
+        lifetime_s: null,
+        composition_group_id: null,
+      },
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_txt",
+        type: "text",
+        content: { content: "text", position: "center", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: null,
+      },
+    });
+    const freeLayer = mount.children[0];
+    assert.equal(freeLayer.children[0].dataset.layer, "midground");
+    assert.equal(freeLayer.children[1].dataset.layer, "foreground");
+  });
+
+  t("image element uses 8s opacity transition so auto-fade dissolves instead of blinks", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_img",
+        type: "image",
+        content: { query: "lamp", position: "background", browser_url: null },
+        lifetime_s: 25,
+        composition_group_id: null,
+      },
+    });
+    const imageNode = mount.children[0].children[0];
+    assert.match(imageNode.style.cssText, /transition:\s*opacity\s+8s/);
+  });
+
+  t("non-image elements use the default 0.3s opacity transition", () => {
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn) => fn(),
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_txt",
+        type: "text",
+        content: { content: "snappy", position: "center", style: "serif" },
+        lifetime_s: null,
+        composition_group_id: null,
+      },
+    });
+    const textNode = mount.children[0].children[0];
+    assert.match(textNode.style.cssText, /transition:\s*opacity\s+0\.3s/);
+  });
+
+  t("element.fade rewrites the opacity transition duration to match patch duration_ms", () => {
+    // Mount an image (8s default transition), then manually fade at
+    // 400 ms. The reducer must rewrite the transition so the decay
+    // completes within the 400 ms window (otherwise the image blinks
+    // — transition still mid-animation when removeNow() fires).
+    const documentLike = new FakeDocument();
+    const mount = documentLike.createElement("div");
+    let scheduledDelay = null;
+    const reducer = createSceneReducer({
+      documentLike, mount, readyTarget: documentLike.body,
+      setTimeoutImpl: (fn, delay) => { scheduledDelay = delay; fn(); },
+    });
+    reducer.applyPatch({
+      type: "element.add",
+      element: {
+        element_id: "elem_img",
+        type: "image",
+        content: { query: "x", position: "background", browser_url: null },
+        lifetime_s: null,
+        composition_group_id: null,
+      },
+    });
+    const node = mount.children[0].children[0];
+    // Manual fade at 400 ms (the default patch_emitter duration).
+    reducer.applyPatch({
+      type: "element.fade",
+      element_id: "elem_img",
+      duration_ms: 400,
+    });
+    // After the (mocked-instant) setTimeout fires, the element is gone;
+    // verify we captured the duration the reducer scheduled.
+    assert.equal(scheduledDelay, 400);
+    // Before removal, the transition should have been rewritten to 400ms.
+    // We can assert on node.style.cssText which was set inside removeElement.
+    // The node is already removed, but the style mutation happened before
+    // remove(), so node.style.cssText still carries the rewrite.
+    assert.match(node.style.cssText, /transition:\s*opacity\s+400ms\s+ease/);
+    // opacity:0 set (triggering the transition):
+    assert.match(node.style.cssText, /opacity:\s*0/);
   });
 
   t("composition_group.fade unmounts every member id", () => {
