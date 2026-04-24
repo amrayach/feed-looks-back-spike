@@ -4,20 +4,28 @@
 // 'unsafe-eval'; connect-src 'none'; frame-src 'none'; style-src
 // 'unsafe-inline'; img-src 'self' data: blob:.
 //
-// Contract:
+// Contract (post Tier 6 R1 MessageChannel refactor):
 //   - Reads user sketch code from <script type="application/json"
 //     id="flb-sketch-code">. The script block is inert per CSP (not
 //     JavaScript) so we can embed arbitrary text there without inline-
 //     script execution.
 //   - Installs a feature mirror on window.features so sketches written
 //     in p5 global mode can read audio features directly.
-//   - Forwards parent -> iframe postMessage feature frames into
-//     window.features; rejects messages whose origin OR source doesn't
-//     match the parent window.
-//   - Posts {type:"ready"} once the bridge is ready to receive features,
-//     {type:"heartbeat"} on a 500 ms interval, and {type:"error"} on
-//     any sketch error. Outbound messages are targeted at the parent's
-//     origin so they cannot be intercepted by a foreign origin.
+//   - On load, the parent posts ONE wildcard-target message carrying a
+//     transferred MessagePort (handshake type="port-handoff"). After
+//     that, ALL parent↔iframe traffic flows over the port — no more
+//     window.postMessage. Origin disappears as a concept once the port
+//     is installed; the port itself is the capability.
+//   - Rejects any handshake whose source is not window.parent, or
+//     whose shape is not {type:"port-handoff", ports:[1 port]}. Detaches
+//     the window listener after the first valid handshake, so a later
+//     attacker who somehow reaches window.postMessage cannot hand us a
+//     second port and hijack the transport.
+//   - Posts {type:"ready"} once the port is up, {type:"heartbeat"}
+//     on a 500 ms interval, {type:"error"} on any sketch error. All
+//     outbound messages go over parentPort.postMessage(...). No
+//     targetOrigin anywhere on the port path — ports do not use
+//     origin for addressing.
 //   - Executes the sketch via indirect eval so p5's global-mode hooks
 //     (setup/draw) land on the global object. Requires 'unsafe-eval';
 //     safe because the iframe has sandbox="allow-scripts" without
@@ -28,17 +36,8 @@
 // Companion server: node/src/stage_server.mjs (/p5/sandbox route).
 
 (function () {
-  // Even though the iframe is sandboxed without allow-same-origin
-  // (making its document origin opaque -> window.location.origin is
-  // "null"), window.location.href still contains the full URL the
-  // iframe was loaded from. Parsing that URL gives us the parent's
-  // origin, which is what postMessage targetOrigin must match.
-  var parentOrigin;
-  try {
-    parentOrigin = new URL(window.location.href).origin;
-  } catch (_err) {
-    parentOrigin = "*";
-  }
+  var parentPort = null;
+  var heartbeatIntervalId = null;
 
   window.features = {
     amplitude: 0,
@@ -51,35 +50,29 @@
   window.__flb_frame_count = 0;
   window.__flb_last_frame_time_ms = 0;
 
-  function post(msg) {
+  function portPost(msg) {
+    if (!parentPort) return;
     try {
-      window.parent.postMessage(msg, parentOrigin);
+      parentPort.postMessage(msg);
     } catch (_err) {
-      // best effort
+      // best effort — port may have been closed by the host
     }
   }
-  function postReady() {
-    post({ type: "ready" });
+  function postReady(sketchId) {
+    portPost({ type: "ready", sketch_id: sketchId || null });
   }
   function postHeartbeat() {
-    post({
+    portPost({
       type: "heartbeat",
       frame_count: window.__flb_frame_count,
       last_frame_time_ms: window.__flb_last_frame_time_ms,
     });
   }
   function postError(message) {
-    post({ type: "error", message: String(message).slice(0, 500) });
+    portPost({ type: "error", message: String(message).slice(0, 500) });
   }
 
-  window.addEventListener("message", function (event) {
-    // Paired with the host's source+origin gate: only accept messages
-    // from window.parent, and only if the origin line up. The parent
-    // posts with its real origin; the iframe's document origin is
-    // opaque so event.origin here is the real parent origin.
-    if (event.source !== window.parent) return;
-    if (event.origin !== parentOrigin && event.origin !== "null") return;
-    var data = event.data;
+  function handleIncoming(data) {
     if (!data || typeof data !== "object") return;
     if (data.type === "features" && data.values && typeof data.values === "object") {
       var values = data.values;
@@ -89,15 +82,44 @@
         }
       }
     }
-  });
+  }
 
-  setInterval(postHeartbeat, 500);
+  // Single-shot handshake listener. The ONE intentional wildcard-target
+  // postMessage in the whole sandbox flow is the parent's load-event
+  // post that delivers port2 to us. Iframe's sandbox=allow-scripts
+  // (no allow-same-origin) forces an opaque document origin, and
+  // targetOrigin cannot name opaque origins — so the handshake is
+  // protected by three layers instead:
+  //   (a) event.source === window.parent
+  //   (b) message shape (type="port-handoff", exactly 1 transferred port)
+  //   (c) the listener detaches after the first valid handshake
+  // See docs/superpowers/plans/2026-04-24-tier-6-rework-plan.md §4 and
+  // the Codex Tier 6 blocker that drove this refactor.
+  function onHandshake(event) {
+    if (event.source !== window.parent) return;
+    var data = event.data;
+    if (!data || typeof data !== "object") return;
+    if (data.type !== "port-handoff") return;
+    if (!event.ports || event.ports.length !== 1) return;
+    parentPort = event.ports[0];
+    parentPort.onmessage = function (portEvent) {
+      handleIncoming(portEvent.data);
+    };
+    // Single-shot: remove ourselves so an attacker who somehow reaches
+    // window.postMessage cannot hand us a second port.
+    window.removeEventListener("message", onHandshake);
+    // Signal readiness to the host via the port. No targetOrigin; the
+    // port IS the capability.
+    postReady(data.sketch_id);
+    // Only start heartbeats once the port is up; before then, there is
+    // no receiver, so heartbeats would be silently dropped.
+    heartbeatIntervalId = setInterval(postHeartbeat, 500);
+  }
+  window.addEventListener("message", onHandshake);
 
   window.addEventListener("error", function (event) {
     postError(event && event.message ? event.message : "sketch error");
   });
-
-  postReady();
 
   var codeEl = document.getElementById("flb-sketch-code");
   var code = "";
@@ -118,4 +140,18 @@
   } catch (err) {
     postError(err && err.message ? err.message : "sketch runtime error");
   }
+
+  // Expose a small teardown hook for tests that embed this bridge in a
+  // vm context. In a real browser the iframe unload tears down the
+  // interval; the harness doesn't. Harmless at runtime.
+  window.__flb_bridge_teardown = function () {
+    if (heartbeatIntervalId != null) {
+      try { clearInterval(heartbeatIntervalId); } catch (_err) { /* ignore */ }
+      heartbeatIntervalId = null;
+    }
+    if (parentPort) {
+      try { parentPort.close && parentPort.close(); } catch (_err) { /* ignore */ }
+      parentPort = null;
+    }
+  };
 })();
