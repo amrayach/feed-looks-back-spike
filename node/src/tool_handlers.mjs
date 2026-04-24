@@ -8,7 +8,15 @@ import {
   DEFAULT_LIFETIMES,
 } from "./scene_state.mjs";
 import { emitPatchesForToolResult } from "./patch_emitter.mjs";
-import { ReactivitySchema } from "./patch_protocol.mjs";
+import {
+  ReactivitySchema,
+  TransformSpecSchema,
+  PaletteTargetSchema,
+  MorphTargetSchema,
+  TEXT_ANIMATE_EFFECTS,
+} from "./patch_protocol.mjs";
+
+const TEXT_ANIMATE_EFFECT_SET = new Set(TEXT_ANIMATE_EFFECTS);
 
 const VALID_P5_POSITIONS = new Set([
   "top-left", "top-center", "top-right",
@@ -267,6 +275,144 @@ function handleAddCompositeScene(state, input) {
   return { composition_group_id: groupId, element_ids: elementIds };
 }
 
+// ─── Recompose tool handlers (expanded-tools) ──────────────────────
+// All 5 recompose tools target an existing element_id (or the whole
+// scene). They validate inputs, look up the element when applicable,
+// and either echo {ok:true,...} or return {error:"..."}. morphElement
+// is the only one that mutates state.elements — it rewrites the
+// element's content in-place so later cycles' scene summary reflects
+// the new asset.
+function findElementById(state, elementId) {
+  if (!Array.isArray(state?.elements)) return null;
+  return state.elements.find((el) => el?.element_id === elementId) ?? null;
+}
+
+function requireFiniteNumber(input, field) {
+  const v = input[field];
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    return { error: `field '${field}' must be a finite number` };
+  }
+  return null;
+}
+
+function handleTransformElement(state, input) {
+  const idErr = requireString(input, "element_id");
+  if (idErr) return idErr;
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  if (!input.transform || typeof input.transform !== "object" || Array.isArray(input.transform)) {
+    return { error: "missing required field 'transform'" };
+  }
+  const parsed = TransformSpecSchema.safeParse(input.transform);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `transform invalid: ${issues}` };
+  }
+  const el = findElementById(state, input.element_id);
+  if (!el) return { error: "no such element" };
+  return { ok: true, element_id: input.element_id, transform: parsed.data, duration_ms: input.duration_ms };
+}
+
+function handleMorphElement(state, input) {
+  const idErr = requireString(input, "element_id");
+  if (idErr) return idErr;
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  if (!input.to || typeof input.to !== "object" || Array.isArray(input.to)) {
+    return { error: "missing required field 'to'" };
+  }
+  const parsed = MorphTargetSchema.safeParse(input.to);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `to invalid: ${issues}` };
+  }
+  const el = findElementById(state, input.element_id);
+  if (!el) return { error: "no such element" };
+  // Mutate the stored element's content so subsequent scene summaries
+  // reflect the morph. The element_id stays; the type and content
+  // change in place. This intentionally skips morphs onto text — the
+  // recompose surface for text is textAnimate, not morphElement.
+  if (el.type === "text") return { error: "morphElement not supported on text elements; use textAnimate" };
+  el.type = parsed.data.type;
+  el.content = el.content && typeof el.content === "object" ? { ...el.content } : {};
+  if (parsed.data.type === "svg") {
+    el.content.svg_markup = parsed.data.content_or_src;
+    if (typeof el.content.semantic_label !== "string") {
+      el.content.semantic_label = "morphed form";
+    }
+    delete el.content.query;
+    delete el.content.browser_url;
+    delete el.content.image_error;
+    delete el.content.attribution;
+  } else {
+    el.content.query = parsed.data.content_or_src;
+    el.content.browser_url = null;
+    el.content.image_error = null;
+    el.content.attribution = null;
+    delete el.content.svg_markup;
+    delete el.content.semantic_label;
+  }
+  return { ok: true, element_id: input.element_id, to: parsed.data, duration_ms: input.duration_ms };
+}
+
+function handlePulseScene(_state, input) {
+  const intErr = requireFiniteNumber(input, "intensity");
+  if (intErr) return intErr;
+  if (input.intensity < 0 || input.intensity > 1) {
+    return { error: "field 'intensity' must be between 0 and 1" };
+  }
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  if (input.color !== undefined && input.color !== null && typeof input.color !== "string") {
+    return { error: "field 'color' must be a string when provided" };
+  }
+  return {
+    ok: true,
+    intensity: input.intensity,
+    color: typeof input.color === "string" ? input.color : null,
+    duration_ms: input.duration_ms,
+  };
+}
+
+function handlePaletteShift(_state, input) {
+  if (!input.target || typeof input.target !== "object" || Array.isArray(input.target)) {
+    return { error: "missing required field 'target'" };
+  }
+  const parsed = PaletteTargetSchema.safeParse(input.target);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `target invalid: ${issues}` };
+  }
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  return { ok: true, target: parsed.data, duration_ms: input.duration_ms };
+}
+
+function handleTextAnimate(state, input) {
+  const idErr = requireString(input, "element_id");
+  if (idErr) return idErr;
+  if (typeof input.effect !== "string" || !TEXT_ANIMATE_EFFECT_SET.has(input.effect)) {
+    return { error: `field 'effect' must be one of ${[...TEXT_ANIMATE_EFFECT_SET].join(", ")}` };
+  }
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  const el = findElementById(state, input.element_id);
+  if (!el) return { error: "no such element" };
+  if (el.type !== "text") return { error: "textAnimate only applies to text elements" };
+  return { ok: true, element_id: input.element_id, effect: input.effect, duration_ms: input.duration_ms };
+}
+
 export function applyToolCall(state, toolUseBlock) {
   const input = toolUseBlock?.input ?? {};
   switch (toolUseBlock?.name) {
@@ -286,6 +432,16 @@ export function applyToolCall(state, toolUseBlock) {
       return handleSetP5Background(state, input);
     case "addP5Sketch":
       return handleAddP5Sketch(state, input);
+    case "transformElement":
+      return handleTransformElement(state, input);
+    case "morphElement":
+      return handleMorphElement(state, input);
+    case "pulseScene":
+      return handlePulseScene(state, input);
+    case "paletteShift":
+      return handlePaletteShift(state, input);
+    case "textAnimate":
+      return handleTextAnimate(state, input);
     default:
       return { error: `unknown tool '${toolUseBlock?.name}'` };
   }
@@ -1209,6 +1365,181 @@ if (isDirectNodeExecution) {
     assert.match(r.error, /composite element 1|reactivity/i);
     assert.equal(s.elements.length, 0, "atomic failure — no members added");
     assert.equal(Object.keys(s.composition_groups).length, 0, "no group minted");
+  });
+
+  // ─── Recompose tools (expanded-tools) ────────────────────────────
+  t("applyToolCall transformElement validates, looks up element, returns ok-echo", () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tt", name: "transformElement",
+      input: {
+        element_id: addR.element_id,
+        transform: { rotate: 15, scale: 1.2 },
+        duration_ms: 600,
+      },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.element_id, addR.element_id);
+    assert.equal(r.transform.rotate, 15);
+  });
+
+  t("applyToolCall transformElement rejects unknown element + empty transform + bad duration", () => {
+    const s = freshState();
+    const r1 = applyToolCall(s, {
+      type: "tool_use", id: "t", name: "transformElement",
+      input: { element_id: "elem_9999", transform: { rotate: 1 }, duration_ms: 100 },
+    });
+    assert.deepEqual(r1, { error: "no such element" });
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const r2 = applyToolCall(s, {
+      type: "tool_use", id: "t2", name: "transformElement",
+      input: { element_id: addR.element_id, transform: {}, duration_ms: 100 },
+    });
+    assert.match(r2.error, /transform invalid/);
+    const r3 = applyToolCall(s, {
+      type: "tool_use", id: "t3", name: "transformElement",
+      input: { element_id: addR.element_id, transform: { rotate: 1 }, duration_ms: -5 },
+    });
+    assert.match(r3.error, /duration_ms/);
+  });
+
+  t("applyToolCall morphElement updates the stored element content in-place", () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addSVG",
+      input: {
+        svg_markup: "<svg viewBox='0 0 10 10'><circle cx='5' cy='5' r='3'/></svg>",
+        position: "center",
+        semantic_label: "ring",
+      },
+    });
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tm", name: "morphElement",
+      input: {
+        element_id: addR.element_id,
+        to: { type: "image", content_or_src: "minaret at dusk" },
+        duration_ms: 800,
+      },
+    });
+    assert.equal(r.ok, true);
+    const stored = s.elements.find((e) => e.element_id === addR.element_id);
+    assert.equal(stored.type, "image");
+    assert.equal(stored.content.query, "minaret at dusk");
+    assert.equal(stored.content.svg_markup, undefined);
+  });
+
+  t("applyToolCall morphElement rejects on text element type", () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tm", name: "morphElement",
+      input: {
+        element_id: addR.element_id,
+        to: { type: "svg", content_or_src: "<svg/>" },
+        duration_ms: 400,
+      },
+    });
+    assert.match(r.error, /not supported on text/);
+  });
+
+  t("applyToolCall pulseScene validates intensity in [0,1] and returns ok-echo", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tp", name: "pulseScene",
+      input: { intensity: 0.6, color: "#d59c6a", duration_ms: 400 },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.color, "#d59c6a");
+    const bad = applyToolCall(s, {
+      type: "tool_use", id: "tp2", name: "pulseScene",
+      input: { intensity: 1.7, duration_ms: 400 },
+    });
+    assert.match(bad.error, /intensity/);
+  });
+
+  t("applyToolCall paletteShift requires at least one of hue/saturation/lightness", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tps", name: "paletteShift",
+      input: { target: { hue: 20 }, duration_ms: 1200 },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.target.hue, 20);
+    const bad = applyToolCall(s, {
+      type: "tool_use", id: "tps2", name: "paletteShift",
+      input: { target: {}, duration_ms: 1200 },
+    });
+    assert.match(bad.error, /target invalid/);
+  });
+
+  t("applyToolCall textAnimate rejects unknown effect and non-text elements", () => {
+    const s = freshState();
+    const tx = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "what remains", position: "center", style: "serif" },
+    });
+    const sv = applyToolCall(s, {
+      type: "tool_use", id: "tb", name: "addSVG",
+      input: { svg_markup: "<svg/>", position: "center", semantic_label: "x" },
+    });
+    const ok = applyToolCall(s, {
+      type: "tool_use", id: "tc", name: "textAnimate",
+      input: { element_id: tx.element_id, effect: "wordByWord", duration_ms: 600 },
+    });
+    assert.equal(ok.ok, true);
+    const badEffect = applyToolCall(s, {
+      type: "tool_use", id: "td", name: "textAnimate",
+      input: { element_id: tx.element_id, effect: "spinaround", duration_ms: 600 },
+    });
+    assert.match(badEffect.error, /effect/);
+    const wrongType = applyToolCall(s, {
+      type: "tool_use", id: "te", name: "textAnimate",
+      input: { element_id: sv.element_id, effect: "shake", duration_ms: 400 },
+    });
+    assert.match(wrongType.error, /text elements/);
+  });
+
+  t("applyToolCallDetailed for transformElement returns the element.transform patch", async () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const detailed = await applyToolCallDetailed(s, {
+      type: "tool_use", id: "tt", name: "transformElement",
+      input: {
+        element_id: addR.element_id,
+        transform: { translate: { x: 5, y: -3 } },
+        duration_ms: 300,
+      },
+    });
+    assert.equal(detailed.result.ok, true);
+    assert.equal(detailed.patches.length, 1);
+    assert.equal(detailed.patches[0].type, "element.transform");
+    assert.equal(detailed.patches[0].element_id, addR.element_id);
+    assert.equal(detailed.patches[0].transform.translate.x, 5);
+  });
+
+  t("applyToolCallDetailed for pulseScene returns scene.pulse patch with optional color", async () => {
+    const s = freshState();
+    const detailed = await applyToolCallDetailed(s, {
+      type: "tool_use", id: "tp", name: "pulseScene",
+      input: { intensity: 0.4, duration_ms: 600 },
+    });
+    assert.equal(detailed.patches.length, 1);
+    assert.equal(detailed.patches[0].type, "scene.pulse");
+    assert.equal(detailed.patches[0].intensity, 0.4);
+    assert.equal("color" in detailed.patches[0], false);
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
