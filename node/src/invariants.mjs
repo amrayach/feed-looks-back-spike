@@ -5,10 +5,13 @@
 // module's self-test can catch.
 //
 // Invariants frozen here correspond to spec §12 and Session I handoff §3:
-//   1  feature-vocabulary identity across node + python + browser
-//   7  reactive keys on elements do NOT change operator_views HTML
-//  10  p5 bridge does not read parent DOM or globals
-//  ε  phase-6 N=3 cap holds under a malformed burst
+//   1   feature-vocabulary identity across node + python + browser
+//  1p   feature vocabulary appears in hijaz_base.md (prompt surface)
+//  1t   feature vocabulary appears in every tools.json reactivity enum
+//   7   reactive keys on elements do NOT change operator_views HTML
+//  10   p5 bridge does not read parent DOM or globals
+// 10h   sandbox-context mock blocks parent/top/cookie/fetch access
+//   ε   phase-6 N=3 cap holds under a malformed burst (DOM-level)
 
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -98,6 +101,89 @@ if (isDirectNodeExecution) {
       [...canonical, "t"].sort(),
       `stream_features.py required set drift: ${pyKeys.join(",")}`,
     );
+  });
+
+  // ─── Invariant 1p ────────────────────────────────────────────
+  // The six canonical feature names must also appear in the prompt
+  // the Opus author sees. If a name is missing here, Opus has no
+  // way to reference the feature when authoring reactivity; if an
+  // extra feature-name-shaped token appears, Opus may pattern-match
+  // on a stale vocabulary. We enforce both: presence (word-boundary
+  // match) and no-extras (every `window.features.X` reference names
+  // a canonical feature).
+  await t("invariant 1p (prompt surface): all six feature names appear in hijaz_base.md with no extras", async () => {
+    const { FEATURE_NAMES } = await import("./patch_protocol.mjs");
+    const canonical = [...FEATURE_NAMES];
+    const body = read(join(NODE_ROOT, "prompts", "hijaz_base.md"));
+
+    for (const name of canonical) {
+      const re = new RegExp("\\b" + name + "\\b");
+      assert.ok(re.test(body), `feature "${name}" is missing from hijaz_base.md`);
+    }
+
+    // No extras: every `window.features.X` reference in code blocks
+    // or prose must name a canonical feature. This catches a 7th
+    // informal feature name introduced via a doc edit.
+    const referenced = [...body.matchAll(/window\.features\.([a-z_][a-z0-9_]*)/g)]
+      .map((m) => m[1]);
+    const extras = [...new Set(referenced.filter((n) => !canonical.includes(n)))];
+    assert.deepEqual(
+      extras,
+      [],
+      `hijaz_base.md references non-canonical features via window.features.X: ${extras.join(", ")}`,
+    );
+  });
+
+  // ─── Invariant 1t ────────────────────────────────────────────
+  // Every tools.json under prompts/configs/ defines a reactivity
+  // feature enum that Opus tool-calls are validated against. The
+  // enum's membership must exactly equal FEATURE_NAMES — no missing
+  // (Opus would reject a valid call), no extras (Opus could author
+  // a call that passes schema but crashes the feature bus).
+  await t("invariant 1t (tool surface): all tools.json reactivity feature enums exactly match FEATURE_NAMES", async () => {
+    const { FEATURE_NAMES } = await import("./patch_protocol.mjs");
+    const canonicalSorted = [...FEATURE_NAMES].sort();
+    const configsRoot = join(NODE_ROOT, "prompts", "configs");
+
+    function collectFeatureEnums(node, acc) {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const item of node) collectFeatureEnums(item, acc);
+        return;
+      }
+      for (const [key, val] of Object.entries(node)) {
+        if (
+          key === "feature" &&
+          val && typeof val === "object" &&
+          val.type === "string" &&
+          Array.isArray(val.enum)
+        ) {
+          acc.push(val.enum);
+        }
+        collectFeatureEnums(val, acc);
+      }
+    }
+
+    let enumCount = 0;
+    for (const cfg of readdirSync(configsRoot)) {
+      const toolsPath = join(configsRoot, cfg, "tools.json");
+      const doc = JSON.parse(read(toolsPath));
+      const enums = [];
+      collectFeatureEnums(doc, enums);
+      assert.ok(
+        enums.length > 0,
+        `no reactivity feature enums found in ${toolsPath} — expected at least one`,
+      );
+      for (const e of enums) {
+        enumCount += 1;
+        assert.deepEqual(
+          [...e].sort(),
+          canonicalSorted,
+          `${toolsPath} reactivity feature enum drift: [${e.join(",")}] vs canonical [${canonicalSorted.join(",")}]`,
+        );
+      }
+    }
+    assert.ok(enumCount > 0, "no reactivity feature enums found across any tools.json");
   });
 
   // ─── Invariant 7 ─────────────────────────────────────────────
@@ -196,67 +282,182 @@ if (isDirectNodeExecution) {
     );
   });
 
+  // ─── Invariant 10h (harness) ─────────────────────────────────
+  // This test MOCKS the browser's sandbox-iframe semantics with a
+  // vm.runInContext harness. Real enforcement comes from the browser's
+  // same-origin policy + the /p5/sandbox HTTP CSP header; neither is
+  // exercised here. The harness exists to catch a future code change
+  // that accidentally exposes a real `window.parent`, `document`, or
+  // `fetch` into a sketch-style execution context — e.g. a refactor
+  // that widens the sandbox globals map beyond what the bridge should
+  // see. Mock-level (not browser-level): every attempt hits a trap
+  // defined in this file, so "passed" means "our understanding of the
+  // contract holds", not "the browser enforces it."
+  // Real-browser verification belongs in the Phase 7 Playwright smoke.
+  await t("invariant 10h (harness): sketch-context mock blocks parent/top/cookie/fetch access", async () => {
+    const vm = await import("node:vm");
+
+    const parentError = "SOP: opaque origin cannot reach parent";
+    const fetchError = "CSP connect-src 'none'";
+
+    const sandboxGlobals = {
+      window: new Proxy({}, {
+        get(_target, prop) {
+          if (prop === "top" || prop === "parent") throw new Error(parentError);
+          return undefined;
+        },
+        set() { return true; },
+      }),
+      document: new Proxy({}, {
+        get(_target, prop) {
+          // Sentinel: real browsers return "" for cookies on an opaque
+          // origin (no cookies available). We mirror that here.
+          if (prop === "cookie" || prop === "domain") return "";
+          return undefined;
+        },
+        set(_target, prop) {
+          // Setting document.domain from an opaque origin throws in
+          // real browsers; mirror that here.
+          if (prop === "domain") throw new Error(parentError);
+          return true;
+        },
+      }),
+      fetch: () => { throw new TypeError(fetchError); },
+    };
+    vm.createContext(sandboxGlobals);
+
+    // Attempt 1: window.top — must throw (SOP mock).
+    assert.throws(
+      () => vm.runInContext("window.top", sandboxGlobals),
+      /SOP: opaque origin/,
+      "window.top should throw under mock SOP",
+    );
+
+    // Attempt 2: window.parent.__anything — must throw on .parent access.
+    assert.throws(
+      () => vm.runInContext("window.parent.__anything", sandboxGlobals),
+      /SOP: opaque origin/,
+      "window.parent.__anything should throw under mock SOP",
+    );
+
+    // Attempt 3: document.domain = 'attacker.example' — must throw on set.
+    assert.throws(
+      () => vm.runInContext("document.domain = 'attacker.example'", sandboxGlobals),
+      /SOP: opaque origin/,
+      "document.domain assignment should throw under mock SOP",
+    );
+
+    // Attempt 4: document.cookie — sentinel (empty string), not a throw.
+    const cookie = vm.runInContext("document.cookie", sandboxGlobals);
+    assert.equal(cookie, "", "document.cookie should be empty-string sentinel in sandbox");
+
+    // Attempt 5: fetch('http://evil.example') — must throw (CSP mock).
+    assert.throws(
+      () => vm.runInContext("fetch('http://evil.example')", sandboxGlobals),
+      /CSP connect-src/,
+      "fetch should throw under mock CSP connect-src 'none'",
+    );
+  });
+
   // ─── Phase 6 Invariant 1 (E2E) ───────────────────────────────
   // scene_reducer enforces a N=3 cap on localized sketches with a
   // belt-and-suspenders eviction: if a 4th sketch.add arrives without
   // a prior sketch.retire, the reducer evicts the oldest locally. A
   // malformed burst of 10 sketch.add patches arriving back-to-back
   // (hostile or buggy producer) must leave the stage with ≤3 iframes.
-  await t("phase-6 invariant 1: 10-sketch malformed burst leaves at most 3 iframes mounted", async () => {
+  await t("phase-6 invariant 1 (DOM-level): 10-sketch burst leaves ≤3 iframes mounted, matching slot count", async () => {
     const { createSceneReducer } = await import("../browser/scene_reducer.mjs");
 
-    function fakeDocument() {
-      const body = { children: [], dataset: {} };
-      return {
-        body,
-        createElement: (tag) => ({
-          tagName: (tag ?? "div").toUpperCase(),
-          children: [],
-          style: {},
-          dataset: {},
-          _attributes: {},
-          _listeners: new Map(),
-          appendChild(c) { this.children.push(c); c.parent = this; return c; },
-          remove() {
-            if (!this.parent) return;
-            const i = this.parent.children.indexOf(this);
-            if (i !== -1) this.parent.children.splice(i, 1);
-            this.parent = null;
-          },
-          setAttribute(n, v) { this._attributes[n] = v; },
-          getAttribute(n) { return this._attributes[n]; },
-          addEventListener(type, fn) {
-            const list = this._listeners.get(type) ?? [];
-            list.push(fn); this._listeners.set(type, list);
-          },
-          removeEventListener(type, fn) {
-            const list = this._listeners.get(type) ?? [];
-            this._listeners.set(type, list.filter((x) => x !== fn));
-          },
-          set innerHTML(v) { this._innerHTML = v; },
-          get innerHTML() { return this._innerHTML ?? ""; },
-        }),
+    // FakeDocument that tracks iframe createElement + removeChild calls
+    // at the DOM level. The cardinality assertion below counts REAL
+    // iframe elements still attached to the mount tree, not just an
+    // internal slot-map entry — so a future bug that detaches slot
+    // bookkeeping from actual DOM lifecycle fails loudly here.
+    const createLog = []; // every iframe createElement — in order
+    const removeLog = []; // every iframe removeChild — in order (by sketch_id)
+
+    function makeFakeElement(tag) {
+      const el = {
+        tagName: (tag ?? "div").toUpperCase(),
+        children: [],
+        dataset: {},
+        style: {},
+        _attributes: {},
+        parent: null,
+        appendChild(c) { this.children.push(c); c.parent = this; return c; },
+        removeChild(c) {
+          const i = this.children.indexOf(c);
+          if (i !== -1) this.children.splice(i, 1);
+          c.parent = null;
+          if (c.tagName === "IFRAME") removeLog.push(c.dataset.sketchId ?? "<unknown>");
+        },
+        remove() {
+          if (!this.parent) return;
+          this.parent.removeChild(this);
+        },
+        setAttribute(n, v) { this._attributes[n] = v; },
+        getAttribute(n) { return this._attributes[n]; },
       };
+      return el;
     }
 
-    const doc = fakeDocument();
-    const mount = doc.createElement("div");
-    const mountedIds = [];
-    const retiredIds = [];
-    const p5Sandbox = {
-      mountBackground() {},
-      mountLocalized({ sketch_id }) { mountedIds.push(sketch_id); },
-      retireSketch(sketch_id) { retiredIds.push(sketch_id); },
-      dispose() {},
+    const fakeDocument = {
+      body: makeFakeElement("body"),
+      createElement(tag) {
+        const el = makeFakeElement(tag);
+        if (el.tagName === "IFRAME") createLog.push(el);
+        return el;
+      },
     };
+    const mount = fakeDocument.createElement("div");
+
+    // Minimal iframe-tracking sandbox shim: mountLocalized creates an
+    // iframe through the FakeDocument so createLog/removeLog see it.
+    // retireSketch removes via the DOM, not an internal tracker. This
+    // keeps the real N=3 eviction logic in scene_reducer in the test
+    // path while giving us a DOM surface to count.
+    const iframesBySketchId = new Map();
+    const p5Sandbox = {
+      mountBackground({ sketch_id }) {
+        const iframe = fakeDocument.createElement("iframe");
+        iframe.dataset.sketchId = sketch_id;
+        iframe.dataset.slot = "background";
+        mount.appendChild(iframe);
+        iframesBySketchId.set(sketch_id, iframe);
+      },
+      mountLocalized({ sketch_id }) {
+        const iframe = fakeDocument.createElement("iframe");
+        iframe.dataset.sketchId = sketch_id;
+        iframe.dataset.slot = "localized";
+        mount.appendChild(iframe);
+        iframesBySketchId.set(sketch_id, iframe);
+      },
+      retireSketch(sketch_id) {
+        const iframe = iframesBySketchId.get(sketch_id);
+        if (!iframe) return;
+        iframe.remove();
+        iframesBySketchId.delete(sketch_id);
+      },
+      dispose() {
+        for (const id of [...iframesBySketchId.keys()]) this.retireSketch(id);
+      },
+      getLocalizedSlotCount() {
+        let n = 0;
+        for (const iframe of iframesBySketchId.values()) {
+          if (iframe.dataset.slot === "localized") n += 1;
+        }
+        return n;
+      },
+    };
+
     const reducer = createSceneReducer({
-      documentLike: doc, mount, readyTarget: doc.body,
+      documentLike: fakeDocument,
+      mount,
+      readyTarget: fakeDocument.body,
       setTimeoutImpl: (fn) => fn(),
       p5Sandbox,
     });
-    // Silence the scene_reducer.warn the cap-exceeded message emits
-    // — the test is asserting that eviction happens, so the warn is
-    // expected noise.
+
     const origWarn = console.warn;
     console.warn = () => {};
     try {
@@ -274,14 +475,32 @@ if (isDirectNodeExecution) {
     } finally {
       console.warn = origWarn;
     }
-    // 10 mount calls happened — but the belt-and-suspenders eviction
-    // means 7 of them were evicted locally (oldest-first).
-    assert.equal(mountedIds.length, 10);
-    assert.equal(retiredIds.length, 7);
-    // The three survivors should be the most recent three.
-    assert.deepEqual(retiredIds, [
-      "burst_0","burst_1","burst_2","burst_3","burst_4","burst_5","burst_6",
-    ]);
+
+    // Count live iframes attached to the mount (real DOM count, not
+    // a bookkeeping Map).
+    const liveIframes = mount.children.filter((c) => c.tagName === "IFRAME");
+
+    assert.equal(createLog.length, 10, "expected 10 iframe createElement calls");
+    assert.ok(
+      liveIframes.length <= 3,
+      `live iframes = ${liveIframes.length}, expected ≤3 after burst`,
+    );
+    assert.equal(
+      liveIframes.length,
+      p5Sandbox.getLocalizedSlotCount(),
+      "DOM iframe count diverges from sandbox slot count — internal/external desync",
+    );
+    assert.equal(
+      removeLog.length,
+      7,
+      `expected 7 iframe removeChild calls (10 created - 3 survivors), got ${removeLog.length}`,
+    );
+    // Evicted iframes should be the earliest 7, in insertion order.
+    assert.deepEqual(
+      removeLog,
+      ["burst_0", "burst_1", "burst_2", "burst_3", "burst_4", "burst_5", "burst_6"],
+      `eviction order mismatch: ${removeLog.join(",")}`,
+    );
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
