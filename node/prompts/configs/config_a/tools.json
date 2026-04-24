@@ -265,6 +265,139 @@
     }
   },
   {
+    "name": "transformElement",
+    "description": "Animate the CSS transform of an existing element — rotate, scale, or translate it over duration_ms. Use when the music asks for motion of something already placed, not a new placement. A calligraphic stroke rotated into a new angle as the phrase arrives; a lantern scaled up as the music crests; a figure translated toward the edge as the music recedes. element_id comes from the scene state summary. Safe to call repeatedly on the same element — the last transform wins, the intermediate ones animate to it. Returns { ok: true } or an error tool result.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "element_id": {
+          "type": "string",
+          "description": "The element_id of the element to transform (e.g. \"elem_0004\"). Must match an id visible in the current scene state summary."
+        },
+        "transform": {
+          "type": "object",
+          "description": "At least one of rotate, scale, translate must be present.",
+          "properties": {
+            "rotate": { "type": "number", "description": "Rotation in degrees. Positive = clockwise. E.g. 15, -30, 180." },
+            "scale": { "type": "number", "description": "Uniform scale factor. 1.0 = no change; 1.4 = grow 40%; 0.6 = shrink." },
+            "translate": {
+              "type": "object",
+              "description": "Translation in pixels relative to the element's current position.",
+              "properties": {
+                "x": { "type": "number" },
+                "y": { "type": "number" }
+              },
+              "required": ["x", "y"]
+            }
+          }
+        },
+        "duration_ms": {
+          "type": "number",
+          "description": "How long the animation takes, in milliseconds. 300–1200 for a musical gesture; 2000+ for a slow drift. Must be >= 0."
+        }
+      },
+      "required": ["element_id", "transform", "duration_ms"]
+    }
+  },
+  {
+    "name": "morphElement",
+    "description": "Cross-fade an existing element from its current asset to a new one of the same element_id. The element stays, but what it depicts changes. Use when one figurative form should become another mid-phrase — a palm tree that becomes a minaret as the melody rises to the ghammaz, a doorway that becomes a threshold of light as the cadence approaches, a single line of calligraphy that becomes a small lantern when the phrase resolves. element_id and duration_ms govern the overlap of the cross-fade.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "element_id": {
+          "type": "string",
+          "description": "The element_id of the element to morph (e.g. \"elem_0004\"). Must match an id visible in the current scene state summary."
+        },
+        "to": {
+          "type": "object",
+          "description": "The new asset. Either a new svg_markup (inline SVG), or a new image search query.",
+          "properties": {
+            "type": { "type": "string", "enum": ["svg", "image"] },
+            "content_or_src": {
+              "type": "string",
+              "description": "For type='svg': the full inline SVG markup of the destination form. For type='image': the search query for the destination image."
+            }
+          },
+          "required": ["type", "content_or_src"]
+        },
+        "duration_ms": {
+          "type": "number",
+          "description": "Cross-fade duration in milliseconds. 600–1600 for a legible morph; shorter reads as a cut, longer reads as a dissolve."
+        }
+      },
+      "required": ["element_id", "to", "duration_ms"]
+    }
+  },
+  {
+    "name": "pulseScene",
+    "description": "Flash the whole stage with a full-screen color overlay that fades out. Use for climactic or phrase-boundary emphasis — the moment the augmented second lands, the instant of a tahwil arrival, the final breath before a return to the tonic. Not a tool to reach for often; a single pulse per phrase is a strong gesture, and several in a row deaden the scene.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "intensity": {
+          "type": "number",
+          "description": "Peak opacity of the overlay, 0.0–1.0. 0.2 is a soft glow; 0.6 is a clear flush; 0.9 is a near-blinding wash that reads as rupture."
+        },
+        "color": {
+          "type": "string",
+          "description": "Optional CSS color for the overlay. Examples: \"#d59c6a\" (warm lantern), \"#eadfce\" (threshold light), \"rgba(255,230,200,0.9)\". Omit for a neutral warm amber."
+        },
+        "duration_ms": {
+          "type": "number",
+          "description": "Total duration of the flash + fade-out, in milliseconds. 300–900 for a gesture; 1500+ for a sustained wash."
+        }
+      },
+      "required": ["intensity", "duration_ms"]
+    }
+  },
+  {
+    "name": "paletteShift",
+    "description": "Globally shift the stage's color temperature by applying a CSS filter over the root container. Use when the music moves into a different tonal world — a warm lantern-amber reading settling into a cool threshold-dusk reading as the upper jins opens, or a saturation drop across a held tonic. This re-colors everything already on screen; nothing is removed and nothing is re-placed. target specifies the shift in hue (degrees), saturation (multiplier), and lightness (multiplier). At least one of the three must be supplied.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "object",
+          "description": "The palette shift. At least one of hue, saturation, lightness must be present.",
+          "properties": {
+            "hue": { "type": "number", "description": "Hue rotation in degrees. Positive shifts warm→cool in the typical range. E.g. -20 (warmer), 40 (cooler)." },
+            "saturation": { "type": "number", "description": "Saturation multiplier, 0.0–2.0. 1.0 = unchanged; 0.4 = washed-out; 1.6 = deepened. Must be >= 0." },
+            "lightness": { "type": "number", "description": "Brightness multiplier, 0.0–2.0. 1.0 = unchanged; 0.7 = dimmer; 1.3 = brighter. Must be >= 0." }
+          }
+        },
+        "duration_ms": {
+          "type": "number",
+          "description": "How long the shift takes, in milliseconds. 800–4000 for a musical transition; shorter reads as a jolt, longer as a drift."
+        }
+      },
+      "required": ["target", "duration_ms"]
+    }
+  },
+  {
+    "name": "textAnimate",
+    "description": "Animate an already-placed text fragment. Use for gradual reveal, rhythmic emphasis, or anxious instability — not for decoration. effect is one of: \"typewriter\" (character-by-character reveal), \"wordByWord\" (word cascade with staggered fade-in), \"marquee\" (slow slide), \"shake\" (trembling displacement). element_id names a text element already on the scene. duration_ms is the full span of the animation.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "element_id": {
+          "type": "string",
+          "description": "The element_id of the text element to animate (e.g. \"elem_0004\"). Must match an id visible in the current scene state summary and that element must be of type 'text'."
+        },
+        "effect": {
+          "type": "string",
+          "enum": ["typewriter", "wordByWord", "marquee", "shake"],
+          "description": "typewriter reveals characters one-at-a-time (good for testimonial phrases). wordByWord fades each word in sequence (good for measured arrivals). marquee slides the text horizontally (use sparingly — it draws the eye). shake trembles the text (for anxious or broken moments)."
+        },
+        "duration_ms": {
+          "type": "number",
+          "description": "Animation span in milliseconds. 1500–4000 for a gradual reveal; 400–900 for a quick shake."
+        }
+      },
+      "required": ["element_id", "effect", "duration_ms"]
+    }
+  },
+  {
     "name": "addP5Sketch",
     "description": "Place a localized p5.js sketch at a specific position. Used for gestural, short-lived visual responses — a lantern flickering, a hand drawing a line, a textile unfurling. Sketches MUST depict recognizable things. Up to 3 concurrent localized sketches; a 4th auto-retires the oldest (no rejection, you always get a sketch_id). Returns {sketch_id, retired_id?}.",
     "input_schema": {

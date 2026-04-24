@@ -135,6 +135,19 @@ export function createPatchCache({ persistPath }) {
         case "sketch.add":
         case "sketch.retire":
           break;
+        // Recompose patches (expanded-tools) are transient DOM
+        // animations / overlay effects. They don't mutate persisted
+        // replay state, so the cache drops them. element.morph does
+        // change what an element depicts on screen, but its new
+        // content is also written into scene_state on the server and
+        // will surface on the next cycle via a fresh element.add; the
+        // cross-fade itself is visual only.
+        case "element.transform":
+        case "element.morph":
+        case "scene.pulse":
+        case "scene.palette_shift":
+        case "text.animate":
+          break;
       }
       await queuePersist();
     },

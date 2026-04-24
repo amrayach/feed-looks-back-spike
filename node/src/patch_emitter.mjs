@@ -149,6 +149,49 @@ export async function emitPatchesForToolResult({
       });
       return patches;
     }
+    // ─── Recompose tool emissions (expanded-tools) ────────────────
+    // Each tool's handler validated inputs and returned an echo of the
+    // accepted parameters; we translate that echo into the matching
+    // patch. Patches are transient (patch_cache treats them as
+    // no-ops). morphElement also wrote the new content into
+    // scene_state.elements via its handler — that's how subsequent
+    // scene summaries see the morphed state.
+    case "transformElement":
+      return [{
+        type: "element.transform",
+        element_id: result.element_id,
+        transform: result.transform,
+        duration_ms: result.duration_ms,
+      }];
+    case "morphElement":
+      return [{
+        type: "element.morph",
+        element_id: result.element_id,
+        to: result.to,
+        duration_ms: result.duration_ms,
+      }];
+    case "pulseScene": {
+      const patch = {
+        type: "scene.pulse",
+        intensity: result.intensity,
+        duration_ms: result.duration_ms,
+      };
+      if (result.color) patch.color = result.color;
+      return [patch];
+    }
+    case "paletteShift":
+      return [{
+        type: "scene.palette_shift",
+        target: result.target,
+        duration_ms: result.duration_ms,
+      }];
+    case "textAnimate":
+      return [{
+        type: "text.animate",
+        element_id: result.element_id,
+        effect: result.effect,
+        duration_ms: result.duration_ms,
+      }];
     case "addCompositeScene": {
       const element_ids = Array.isArray(result.element_ids) ? result.element_ids : [];
       const groupId = result.composition_group_id;
