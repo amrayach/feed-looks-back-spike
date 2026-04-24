@@ -116,6 +116,38 @@ export async function emitPatchesForToolResult({
       }
       return [{ type: "element.fade", element_id: targetId, duration_ms: DEFAULT_FADE_DURATION_MS }];
     }
+    case "setP5Background": {
+      if (!result?.sketch_id || !state?.p5_background) return [];
+      const patches = [];
+      if (result.retired_id) {
+        patches.push({ type: "sketch.retire", sketch_id: result.retired_id });
+      }
+      patches.push({
+        type: "sketch.background.set",
+        code: state.p5_background.code,
+        audio_reactive: Boolean(state.p5_background.audio_reactive),
+      });
+      return patches;
+    }
+    case "addP5Sketch": {
+      if (!result?.sketch_id) return [];
+      const sketch = (state?.p5_sketches ?? []).find((s) => s.sketch_id === result.sketch_id);
+      if (!sketch) return [];
+      const patches = [];
+      if (result.retired_id) {
+        patches.push({ type: "sketch.retire", sketch_id: result.retired_id });
+      }
+      patches.push({
+        type: "sketch.add",
+        sketch_id: sketch.sketch_id,
+        position: sketch.position,
+        size: sketch.size,
+        code: sketch.code,
+        audio_reactive: Boolean(sketch.audio_reactive),
+        lifetime_s: sketch.lifetime_s ?? null,
+      });
+      return patches;
+    }
     case "addCompositeScene": {
       const element_ids = Array.isArray(result.element_ids) ? result.element_ids : [];
       const groupId = result.composition_group_id;
@@ -277,6 +309,70 @@ if (isDirectNodeExecution) {
       result: { element_id: plainId },
     });
     assert.equal("reactivity" in plainPatches[0].element, false);
+  });
+
+  await t("setP5Background emits sketch.background.set; adds sketch.retire before it when replacing", async () => {
+    const { setP5Background } = await import("./scene_state.mjs");
+    const state = freshState();
+    // First set — no prior background, one patch.
+    const r1 = setP5Background(state, { code: "FIRST_CODE", audio_reactive: true });
+    const patches1 = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "setP5Background", input: { code: "FIRST_CODE", audio_reactive: true } },
+      result: r1,
+    });
+    assert.equal(patches1.length, 1);
+    assert.equal(patches1[0].type, "sketch.background.set");
+    assert.equal(patches1[0].code, "FIRST_CODE");
+    assert.equal(patches1[0].audio_reactive, true);
+    // Second set — prior id retires first, then new background set.
+    const r2 = setP5Background(state, { code: "SECOND_CODE", audio_reactive: false });
+    const patches2 = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "setP5Background", input: { code: "SECOND_CODE", audio_reactive: false } },
+      result: r2,
+    });
+    assert.equal(patches2.length, 2);
+    assert.equal(patches2[0].type, "sketch.retire");
+    assert.equal(patches2[0].sketch_id, r1.sketch_id);
+    assert.equal(patches2[1].type, "sketch.background.set");
+    assert.equal(patches2[1].code, "SECOND_CODE");
+  });
+
+  await t("addP5Sketch emits sketch.add; adds sketch.retire before it on overflow", async () => {
+    const { addP5SketchSlot } = await import("./scene_state.mjs");
+    const state = freshState();
+    // Three sketches without overflow.
+    const a = addP5SketchSlot(state, { position: "top-left", size: "small", code: "A", audio_reactive: true });
+    const b = addP5SketchSlot(state, { position: "center", size: "medium", code: "B", audio_reactive: false });
+    const c = addP5SketchSlot(state, { position: "bottom-right", size: "large", code: "C", audio_reactive: true });
+    const patchesC = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "addP5Sketch", input: { position: "bottom-right", size: "large", code: "C", audio_reactive: true } },
+      result: c,
+    });
+    assert.equal(patchesC.length, 1);
+    assert.equal(patchesC[0].type, "sketch.add");
+    assert.equal(patchesC[0].sketch_id, c.sketch_id);
+    assert.equal(patchesC[0].code, "C");
+    assert.equal(patchesC[0].position, "bottom-right");
+    assert.equal(patchesC[0].size, "large");
+    // Fourth sketch — evicts oldest (a). Patch stream: retire(a) then add(d).
+    const d = addP5SketchSlot(state, { position: "mid-left", size: "small", code: "D", audio_reactive: false });
+    assert.equal(d.retired_id, a.sketch_id);
+    const patchesD = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "addP5Sketch", input: { position: "mid-left", size: "small", code: "D", audio_reactive: false } },
+      result: d,
+    });
+    assert.equal(patchesD.length, 2);
+    assert.equal(patchesD[0].type, "sketch.retire");
+    assert.equal(patchesD[0].sketch_id, a.sketch_id);
+    assert.equal(patchesD[1].type, "sketch.add");
+    assert.equal(patchesD[1].sketch_id, d.sketch_id);
+    // Defensive silence-of-b assertion so the test surface reads the
+    // eviction intent clearly.
+    assert.equal(b.retired_id, null);
   });
 
   await t("addImage emits browser_url when fetch succeeds", async () => {
