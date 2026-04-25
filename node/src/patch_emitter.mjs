@@ -71,6 +71,10 @@ async function emitAddImagePatch({ state, result, fetchImageImpl }) {
   const element = findElement(state, result.element_id);
   if (!element) return [];
 
+  return [await createElementAddPatch(element, { fetchImageImpl })];
+}
+
+async function imageContentOverrides(element, fetchImageImpl) {
   const imageResult = await fetchImageImpl(element.content.query);
   let browser_url = null;
   let image_error = null;
@@ -82,10 +86,27 @@ async function emitAddImagePatch({ state, result, fetchImageImpl }) {
     image_error = imageResult?.error ?? "image fetch failed";
   }
 
-  return [{
-    type: "element.add",
-    element: normalizeElementForPatch(element, { browser_url, image_error, attribution }),
-  }];
+  return { browser_url, image_error, attribution };
+}
+
+async function createElementAddPatch(element, { fetchImageImpl }) {
+  if (element.type === "image") {
+    const overrides = await imageContentOverrides(element, fetchImageImpl);
+    return {
+      type: "element.add",
+      element: normalizeElementForPatch(element, overrides),
+    };
+  }
+  if (element.type === "svg") {
+    const svg_markup = isSvgMarkupValid(element.content?.svg_markup)
+      ? element.content.svg_markup
+      : invalidSvgPlaceholder("invalid svg_markup", element.content?.semantic_label);
+    return {
+      type: "element.add",
+      element: normalizeElementForPatch(element, { svg_markup }),
+    };
+  }
+  return { type: "element.add", element: normalizeElementForPatch(element) };
 }
 
 export async function emitPatchesForToolResult({
@@ -103,14 +124,7 @@ export async function emitPatchesForToolResult({
     }
     case "addSVG": {
       const element = findElement(state, result.element_id);
-      if (!element) return [];
-      const svg_markup = isSvgMarkupValid(element.content?.svg_markup)
-        ? element.content.svg_markup
-        : invalidSvgPlaceholder("invalid svg_markup", element.content?.semantic_label);
-      return [{
-        type: "element.add",
-        element: normalizeElementForPatch(element, { svg_markup }),
-      }];
+      return element ? [await createElementAddPatch(element, { fetchImageImpl })] : [];
     }
     case "addImage":
       return emitAddImagePatch({ state, result, fetchImageImpl });
@@ -221,10 +235,13 @@ export async function emitPatchesForToolResult({
     case "addCompositeScene": {
       const element_ids = Array.isArray(result.element_ids) ? result.element_ids : [];
       const groupId = result.composition_group_id;
-      const elementPatches = element_ids
+      const elements = element_ids
         .map((elementId) => findElement(state, elementId))
-        .filter(Boolean)
-        .map((element) => ({ type: "element.add", element: normalizeElementForPatch(element) }));
+        .filter(Boolean);
+      const elementPatches = [];
+      for (const element of elements) {
+        elementPatches.push(await createElementAddPatch(element, { fetchImageImpl }));
+      }
       const group = groupId ? findGroup(state, groupId) : null;
       const groupPatch = group
         ? [{
@@ -350,6 +367,37 @@ if (isDirectNodeExecution) {
     const patches = await emitPatchesForToolResult({ state, toolUseBlock: block, result });
     assert.equal(patches.filter((patch) => patch.type === "element.add").length, 2);
     assert.equal(patches.find((patch) => patch.type === "composition_group.add").group.group_id, groupId);
+  });
+
+  await t("addCompositeScene image members fetch and carry browser_url", async () => {
+    const state = freshState();
+    const groupId = addCompositionGroup(state, { group_label: "threshold arrival" });
+    const imageId = addElement(state, {
+      type: "image",
+      content: { query: "threshold light", position: "background", composition_group_id: groupId },
+      lifetime_s: null,
+    });
+    const textId = addElement(state, {
+      type: "text",
+      content: { content: "after", position: "lower-left", style: "", composition_group_id: groupId },
+      lifetime_s: null,
+    });
+    const block = { name: "addCompositeScene", input: { group_label: "threshold arrival" } };
+    const result = { composition_group_id: groupId, element_ids: [imageId, textId] };
+    const patches = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: block,
+      result,
+      fetchImageImpl: async () => ({
+        path: "/tmp/image_cache/composite123.jpg",
+        attribution: { photographer_name: "A", photographer_url: "u", photo_url: "p" },
+        cached: true,
+      }),
+    });
+    const imagePatch = patches.find((patch) => patch.element?.element_id === imageId);
+    assert.equal(imagePatch.element.content.browser_url, "/image_cache/composite123.jpg");
+    assert.equal(imagePatch.element.content.image_error, null);
+    assert.equal(imagePatch.element.content.attribution.photographer_name, "A");
   });
 
   await t("element.add patch carries reactivity when the stored element has it", async () => {

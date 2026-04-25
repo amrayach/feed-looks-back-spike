@@ -136,7 +136,7 @@ export function patchToHudToolCall(patch) {
       let name = "addElement";
       if (el.type === "text") name = "addText";
       else if (el.type === "image") name = "addImage";
-      else if (el.type === "svg") name = "addSvg";
+      else if (el.type === "svg") name = "addSVG";
       return {
         name,
         input: {
@@ -163,7 +163,7 @@ export function patchToHudToolCall(patch) {
       };
     case "sketch.background.set":
       return {
-        name: "setBackgroundP5Sketch",
+        name: "setP5Background",
         input: {
           sketch_id: patch.sketch_id,
           audio_reactive: patch.audio_reactive,
@@ -295,6 +295,22 @@ if (isDirectNodeExecution) {
     });
     assert.equal(sketch.name, "addP5Sketch");
     assert.equal(sketch.input.code, "draw(){}");
+    const p5bg = patchToHudToolCall({
+      type: "sketch.background.set",
+      sketch_id: "sk_bg",
+      code: "function draw(){}",
+      audio_reactive: false,
+    });
+    assert.equal(p5bg.name, "setP5Background");
+    const svg = patchToHudToolCall({
+      type: "element.add",
+      element: {
+        element_id: "elem_0002",
+        type: "svg",
+        content: { svg_markup: "<svg></svg>", semantic_label: "mark" },
+      },
+    });
+    assert.equal(svg.name, "addSVG");
     assert.equal(patchToHudToolCall(null), null);
     assert.equal(patchToHudToolCall({ type: "unknown" }), null);
   });

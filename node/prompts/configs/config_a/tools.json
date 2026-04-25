@@ -64,7 +64,7 @@
   },
   {
     "name": "addSVG",
-    "description": "Place a symbolic drawn form on the scene. You generate real inline SVG markup for the renderer to place. Use forms when the music has structural events (aug2 leap, tahwil, phrase climax), and keep them inside the signature visual grammar: threshold or doorframe, manuscript line, stone plane, lamp glow, textile edge, held architectural span. Returns the new element_id.",
+    "description": "Place a symbolic drawn form on the scene. You generate real inline SVG markup for the renderer to place. Use forms when the music has structural events (a sustained pivot, a muhayyar arrival, a phrase climax), and keep them inside the Bayati signature visual grammar: a thin line of moonlight on still water, a slow horizontal stratum, a soft warm bloom, an open palm, a single feather, breath rising, a slow ripple, loose linen falling. Bayati is legato — favour breathing, drifting, opening forms over angular breaks. AVOID the Hijaz architectural register (arched doorways, thresholds, doorframes, stone interiors). Returns the new element_id.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -86,7 +86,7 @@
         },
         "reactivity": {
           "type": "array",
-          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. SVG forms respond well to tahwil impulses (scale ring-outs) and hijaz_state gating. Bind the reactivity to a depicted thing, not to a geometric primitive: a candle flame whose scale surges on each tahwil (curve: impulse), trembling leaves whose rotation jumps on each onset, breath rising from a sleeping figure whose translateY drifts with hijaz_intensity — these are the Session I signature moves.",
+          "description": "Optional audio-reactive bindings. See bayati_base.md §Reactivity. SVG forms respond well to muhayyar impulses (scale ring-outs via hijaz_tahwil) and hijaz_state gating. Bind the reactivity to a depicted thing, not to a geometric primitive: a thin line of moonlight whose scale blooms gently on each muhayyar (curve: impulse), trembling leaves whose rotation jumps on each onset, breath rising from a sleeping figure whose translateY drifts with hijaz_intensity. Keep impulse output ranges restrained for Bayati (e.g. 1.0→1.4, not 1.0→2.0).",
           "items": {
             "type": "object",
             "properties": {
@@ -109,11 +109,11 @@
         "layer": {
           "type": "string",
           "enum": ["background", "midground", "foreground"],
-          "description": "Optional depth band. Omit for the per-type default (SVG defaults to foreground). See hijaz_base.md §Motion presets."
+          "description": "Optional depth band. Omit for the per-type default (SVG defaults to foreground). See bayati_base.md §Motion presets."
         },
         "motion": {
           "type": "object",
-          "description": "Optional motion preset — breathe, pulse, orbit, drift, tremble. Composes with explicit reactivity. See hijaz_base.md §Motion presets for per-preset guidance.",
+          "description": "Optional motion preset — breathe, pulse, orbit, drift, tremble. Composes with explicit reactivity. See bayati_base.md §Motion presets for per-preset guidance.",
           "properties": {
             "preset":    { "type": "string", "enum": ["breathe", "pulse", "orbit", "drift", "tremble"] },
             "intensity": { "type": "number" },
@@ -127,25 +127,25 @@
   },
   {
     "name": "addImage",
-    "description": "Place a photographic image via search query. Photographs are the figurative heart of the scene — stone, light, a hand on a wall, a lamp, a room, a textile — what the room sits with while the music unfolds. Reach for this tool often; a scene that loses its figurative photography for long passages feels hollow. Soft floor: use addImage in most cycles, and at minimum once every three cycles. Images now have a default time-to-live (~25 s) and dissolve out over ~8 s, so new images replace old ones without needing a manual fadeElement. The query you choose IS the compositional act. Returns the new element_id.",
+    "description": "Place a photographic image via search query. Photographs are the figurative heart of the scene — Bayati's interior-figurative register: a solitary figure in shadow, an open palm in low light, a head bowed, moonlight on still water, loose linen falling, a single feather on dark cloth, the back of someone at a window at night, breath on cold glass — what the room sits with while the music unfolds. Reach for this tool often; a scene that loses its figurative photography for long passages feels hollow. Minimum floor after ramp-up: use addImage at least once every three cycles, and sooner when IMAGE CADENCE is DUE or OVERDUE. Images have a default time-to-live (~25 s) and dissolve out over ~8 s, so related images can overlap while older ones fade. The query you choose IS the compositional act. AVOID the Hijaz architectural register (arched doorways, plaster walls, stone interiors, lamps on stone ledges). Returns the new element_id.",
     "input_schema": {
       "type": "object",
       "properties": {
         "query": {
           "type": "string",
-          "description": "The search query. Be deliberate — avoid generic terms like \"Arabic music\" or \"desert\". Reach for texture, place, quality: \"threshold light through a doorway\", \"stone wall in low sun\", \"salt flats at dusk\", \"oil lamp on a stone ledge\", \"worn cotton textile by a window\"."
+          "description": "The search query. Be deliberate — avoid generic terms like \"Arabic music\" or \"desert\" and avoid mood-only phrases. Reach for photographed subjects with material and light, in the Bayati interior-figurative register: \"open palm resting in low candlelight\", \"head bowed in shadow with soft side light\", \"moonlight on still water at night\", \"loose linen falling across a dark surface in low light\", \"single hand cupped around a small flame\", \"the back of a person looking out a window at night\", \"single feather on dark cloth\", \"solitary figure walking across a dark plain at dusk\". AVOID the Hijaz architectural register (arched doorways, plaster walls, stone interiors, lamps on stone ledges) — those belong to a different maqam."
         },
         "position": {
           "type": "string",
           "description": "Free-form position string. Examples: \"background\", \"upper-right quarter\", \"full bleed\", \"small inset, lower-left\"."
         },
         "lifetime_s": {
-          "type": ["number", "null"],
-          "description": "Optional. Omit this field and the image fades naturally after ~25 s with an ~8 s dissolve — this is almost always what you want, because figurative turnover gives the scene its breathing quality. Pass JSON null (not the string \"null\") to make ONE foundational image that anchors the whole performance. Pass a smaller number (e.g. 8) for a deliberate flash."
+          "type": "number",
+          "description": "Optional. Omit this field and the image fades naturally after ~25 s with an ~8 s dissolve — this is almost always what you want, because figurative turnover gives the scene its breathing quality. Do not request permanent images in live runs; the runner treats null the same as omission. Pass a number only to deliberately shorten or lengthen a photographic passage."
         },
         "reactivity": {
           "type": "array",
-          "description": "Optional audio-reactive bindings. See hijaz_base.md §Reactivity. Images react well to slow features (hijaz_intensity driving color_hue drift or saturation; spectral_centroid driving slow rotation; hijaz_intensity driving a passing blur). Avoid binding fast features to images — photographic content reads as flickering under fast reactions.",
+          "description": "Optional audio-reactive bindings. See bayati_base.md §Reactivity. Images react well to slow features (hijaz_intensity driving color_hue drift or saturation; spectral_centroid driving slow rotation; hijaz_intensity driving a passing blur). Avoid binding fast features to images — photographic content reads as flickering under fast reactions.",
           "items": {
             "type": "object",
             "properties": {
@@ -172,7 +172,7 @@
         },
         "motion": {
           "type": "object",
-          "description": "Optional motion preset. A `breathe` preset on a photographic anchor (a lamp, a textile, a figure) is a characteristic Session I move — the image inhales with the music's energy. See hijaz_base.md §Motion presets.",
+          "description": "Optional motion preset. A `breathe` preset on a photographic anchor (a solitary figure, a head bowed, an open palm, loose linen) is Bayati's preferred move — the image inhales with the music's energy. See bayati_base.md §Motion presets.",
           "properties": {
             "preset":    { "type": "string", "enum": ["breathe", "pulse", "orbit", "drift", "tremble"] },
             "intensity": { "type": "number" },
@@ -186,7 +186,7 @@
   },
   {
     "name": "setBackground",
-    "description": "Shift the atmospheric background. Provide a real CSS background value. Backgrounds persist indefinitely until you change them with another setBackground call — there is no automatic fade. Use rarely for performance-arc structural moves: tahwil, extended silence, a climax, final-tableau settling, or when accumulated scene density demands a new absorbing atmosphere.",
+    "description": "Shift the atmospheric background. Provide a real CSS background value. Backgrounds persist indefinitely until you change them with another setBackground call — there is no automatic fade. Use rarely for performance-arc structural moves: a pivot crossing, a muhayyar arrival, extended silence, a climax, final-tableau settling, or when accumulated scene density demands a new absorbing atmosphere.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -214,7 +214,7 @@
   },
   {
     "name": "addCompositeScene",
-    "description": "Place 2 to 5 related visual elements in one call, grouped as a composition. Use this when the music asks for a layered response — multiple elements entering together that belong to the same moment. Each element in the group gets its own element_id but shares a composition_group_id that links them. The group can later be faded together by calling fadeElement with the composition_group_id.\n\nUse this tool for moments of sustained intensity, for climaxes, for tahwil arrivals where the scene needs to commit to a new register, for atmospheric foundations where a text + image + svg combination grounds a new section, or for the final tableau when existing motifs need to lock into one composed image. Do not use it for every cycle — a scene of entirely composite groups is as monotonous as a scene of entirely single elements.\n\nEach element in the 'elements' array follows the same structure as the single-element tools: type is 'text', 'svg', or 'image'; other fields match the individual tool's required fields for that type.",
+    "description": "Place 2 to 5 related visual elements in one call, grouped as a composition. Use this when the music asks for a layered response — multiple elements entering together that belong to the same moment. Each element in the group gets its own element_id but shares a composition_group_id that links them. The group can later be faded together by calling fadeElement with the composition_group_id.\n\nUse this tool for moments of sustained intensity, for climaxes, for muhayyar arrivals where the scene needs to commit to a new register (Bayati commit is elevation, not impact), for atmospheric foundations where a text + image + svg combination grounds a new section, or for the final tableau when existing motifs need to lock into one composed image. If SHOW DIRECTOR STATUS says composition debt is DUE or OVERDUE, prefer this tool over another transformElement or paletteShift. Do not use it for every cycle — a scene of entirely composite groups is as monotonous as a scene of entirely single elements.\n\nEach element in the 'elements' array follows the same structure as the single-element tools: type is 'text', 'svg', or 'image'; other fields match the individual tool's required fields for that type.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -255,7 +255,7 @@
               },
               "reactivity": {
                 "type": "array",
-                "description": "Optional audio-reactive bindings for this member. See hijaz_base.md §Reactivity. Each member's reactivity is independent — a composite can mix reactive and non-reactive members.",
+                "description": "Optional audio-reactive bindings for this member. See bayati_base.md §Reactivity. Each member's reactivity is independent — a composite can mix reactive and non-reactive members.",
                 "items": {
                   "type": "object",
                   "properties": {
@@ -282,7 +282,7 @@
               },
               "motion": {
                 "type": "object",
-                "description": "Optional motion preset for this member. See hijaz_base.md §Motion presets.",
+                "description": "Optional motion preset for this member. See bayati_base.md §Motion presets.",
                 "properties": {
                   "preset":    { "type": "string", "enum": ["breathe", "pulse", "orbit", "drift", "tremble"] },
                   "intensity": { "type": "number" },
@@ -296,11 +296,11 @@
         },
         "group_label": {
           "type": "string",
-          "description": "Short human-readable phrase (3-8 words) describing the compositional intent of this group. E.g., 'the room someone just left', 'climax response', 'threshold arrival'. Used in scene state summary so you can recognize your own composition groups across cycles."
+          "description": "Short human-readable phrase (3-8 words) describing the compositional intent of this group. E.g., 'the room someone just left', 'climax response', 'muhayyar arrival', 'a quiet rising'. Used in scene state summary so you can recognize your own composition groups across cycles."
         },
         "lifetime_s": {
           "type": "number",
-          "description": "Lifetime in seconds for the whole group. Optional; defaults to the max default-lifetime of the element types in the group."
+          "description": "Optional numeric lifetime in seconds for the whole group. Omit this field so each member keeps its type default: text persists, images turn over, SVGs use their default timed presence. Pass a number only when the whole group should share one timed passage."
         }
       },
       "required": ["elements", "group_label"]
@@ -308,13 +308,13 @@
   },
   {
     "name": "setP5Background",
-    "description": "Replace the background p5 sketch layer. Runs behind all other elements. Use for ambient, atmospheric scenes — a flickering oil-lamp interior, a slowly rippling textile, calligraphic strokes forming and fading, a lantern's glow across stone. Sketches MUST depict recognizable things, namable in one sentence as a scene or object. See hijaz_base.md §Sketches for details. Only one background slot; each call replaces the prior. Returns {sketch_id, retired_id?}.",
+    "description": "Replace the background p5 sketch layer. Runs behind all other elements. Use for ambient, atmospheric scenes — moonlight slowly rippling on a dark surface, soft breath drifting across a cold pane, ink lines appearing and dissolving, a single distant figure crossing a dim plain. Sketches MUST depict recognizable things, namable in one sentence as a scene or object. See bayati_base.md §Sketches for details. Only one background slot; each call replaces the prior. Returns {sketch_id, retired_id?}.",
     "input_schema": {
       "type": "object",
       "properties": {
         "code": {
           "type": "string",
-          "description": "Complete p5.js sketch as JavaScript. Runs in a sandboxed iframe. Access audio features via window.features: amplitude (0..1), onset_strength (0..1), spectral_centroid (Hz), hijaz_state (enum string), hijaz_intensity (0..1), hijaz_tahwil (boolean). No external network, no parent DOM access. Depict a recognizable thing — lantern, textile, ink stroke, doorway, threshold light, hand, lamp glow, fragment of calligraphy."
+          "description": "Complete p5.js sketch as JavaScript. Runs in a sandboxed iframe. Access audio features via window.features: amplitude (0..1), onset_strength (0..1), spectral_centroid (Hz), hijaz_state (enum string — read as Bayati ground/ascent/pivot/muhayyar/descent), hijaz_intensity (0..1), hijaz_tahwil (boolean — fires at the muhayyar arrival). No external network, no parent DOM access. Every sketch must declare and use the Bayati palette constants WARM=['#e8d4a0','#c4894a','#8b4a2a','#f5e6c8','#d4a574'], COOL=['#4a6670','#8a9ba0'], SHADOW='#2a1f14' — random color generation is forbidden. Depict a recognizable Bayati subject — moonlight on water, soft breath on glass, an ink line drying, an open palm, a single feather, a bowed head, a slow ripple, loose linen. AVOID Hijaz architectural subjects (doorway, threshold, lamp on stone)."
         },
         "audio_reactive": {
           "type": "boolean",
@@ -326,7 +326,7 @@
   },
   {
     "name": "transformElement",
-    "description": "Animate the CSS transform of an existing element — rotate, scale, or translate it over duration_ms. Use when the music asks for motion of something already placed, not a new placement. A calligraphic stroke rotated into a new angle as the phrase arrives; a lantern scaled up as the music crests; a figure translated toward the edge as the music recedes. element_id comes from the scene state summary. Safe to call repeatedly on the same element — the last transform wins, the intermediate ones animate to it. Returns { ok: true } or an error tool result.",
+    "description": "Animate the CSS transform of an existing element — rotate, scale, or translate it over duration_ms. Use when the music asks for motion of something already placed, not a new placement. A thin line of moonlight rotated slightly as the phrase arrives; an open palm scaled up gently as the music crests; a solitary figure translated toward the edge as the music recedes. element_id comes from the scene state summary. Technically the last transform wins, but repeated calls on the same element cycle after cycle read as indecision; let each transform register before touching that element again. Returns { ok: true } or an error tool result.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -361,7 +361,7 @@
   },
   {
     "name": "morphElement",
-    "description": "Cross-fade an existing element from its current asset to a new one of the same element_id. The element stays, but what it depicts changes. Use when one figurative form should become another mid-phrase — a palm tree that becomes a minaret as the melody rises to the ghammaz, a doorway that becomes a threshold of light as the cadence approaches, a single line of calligraphy that becomes a small lantern when the phrase resolves. element_id and duration_ms govern the overlap of the cross-fade.",
+    "description": "Cross-fade an existing element from its current asset to a new one of the same element_id. The element stays, but what it depicts changes. Use when one figurative form should become another mid-phrase — a thin line of moonlight that becomes a slow ripple as the cadence approaches, a folded linen that becomes an open palm when the phrase resolves, a closed silhouette that becomes a bowed figure. element_id and duration_ms govern the overlap of the cross-fade.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -391,7 +391,7 @@
   },
   {
     "name": "pulseScene",
-    "description": "Flash the whole stage with a full-screen color overlay that fades out. Use for climactic or phrase-boundary emphasis — the moment the augmented second lands, the instant of a tahwil arrival, the final breath before a return to the tonic. Not a tool to reach for often; a single pulse per phrase is a strong gesture, and several in a row deaden the scene.",
+    "description": "Flash the whole stage with a full-screen color overlay that fades out. Use for climactic or phrase-boundary emphasis — the instant of a muhayyar arrival, the final breath before a return to the tonic, a structural cadence. In Bayati this tool should be used VERY sparingly — Bayati is legato and a hard pulse reads as melodrama. A held bloom via setBackground is usually a better fit; reserve pulseScene for at most one or two soft-amber flushes per performance, never harsh.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -401,7 +401,7 @@
         },
         "color": {
           "type": "string",
-          "description": "Optional CSS color for the overlay. Examples: \"#d59c6a\" (warm lantern), \"#eadfce\" (threshold light), \"rgba(255,230,200,0.9)\". Omit for a neutral warm amber."
+          "description": "Optional CSS color for the overlay. Pick from the Bayati palette only. Examples: \"#d4a574\" (sand gold), \"#f5e6c8\" (pale candlelight), \"rgba(232,212,160,0.85)\" (warm parchment). Omit for a neutral warm amber. NEVER use saturated primaries or pure white at full opacity."
         },
         "duration_ms": {
           "type": "number",
@@ -413,7 +413,7 @@
   },
   {
     "name": "paletteShift",
-    "description": "Globally shift the stage's color temperature by applying a CSS filter over the root container. Use when the music moves into a different tonal world — a warm lantern-amber reading settling into a cool threshold-dusk reading as the upper jins opens, or a saturation drop across a held tonic. This re-colors everything already on screen; nothing is removed and nothing is re-placed. target specifies the shift in hue (degrees), saturation (multiplier), and lightness (multiplier). At least one of the three must be supplied.",
+    "description": "Globally shift the stage's color temperature by applying a CSS filter over the root container. Use when the music moves into a different tonal world — warm parchment settling into cool moonlight-blue as the upper jins opens, or a saturation drop across a held tonic. This re-colors everything already on screen; nothing is removed and nothing is re-placed. target specifies the shift in hue (degrees), saturation (multiplier), and lightness (multiplier). At least one of the three must be supplied.",
     "input_schema": {
       "type": "object",
       "properties": {

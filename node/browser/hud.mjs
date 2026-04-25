@@ -26,6 +26,7 @@ import {
 
 const MAX_CODE_CHARS = 2400; // cap huge p5 sketch code before rendering
 const MAX_DOM_BLOCKS = 300; // trim oldest blocks so the feed stays light
+const GENERATED_FIELDS = new Set(["code", "svg_markup", "css_background"]);
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -96,6 +97,69 @@ function renderToolCallBlock({ name, input, cycle_index, t_ms }) {
   return block;
 }
 
+function generatedLanguageForKey(key) {
+  if (key === "code") return "javascript";
+  if (key === "svg_markup") return "svg";
+  if (key === "css_background") return "css";
+  return "text";
+}
+
+function generatedTitleForKey(name, key, path) {
+  const suffix = path.length > 0
+    ? ` · ${path.map((p) => (typeof p === "number" ? `#${p + 1}` : p)).join(".")}`
+    : "";
+  if (key === "code") return `${name} p5 code${suffix}`;
+  if (key === "svg_markup") return `${name} SVG markup${suffix}`;
+  if (key === "css_background") return `${name} CSS background${suffix}`;
+  return `${name} generated content${suffix}`;
+}
+
+function formatGeneratedContent(key, value) {
+  if (key === "css_background") return `background: ${value};`;
+  return value;
+}
+
+function splitGeneratedFields(name, input) {
+  const artifacts = [];
+  function walk(value, path = []) {
+    if (Array.isArray(value)) return value.map((item, idx) => walk(item, [...path, idx]));
+    if (!value || typeof value !== "object") return value;
+    const out = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (GENERATED_FIELDS.has(key) && typeof child === "string" && child.length > 0) {
+        artifacts.push({
+          title: generatedTitleForKey(name, key, path),
+          language: generatedLanguageForKey(key),
+          content: formatGeneratedContent(key, child),
+        });
+        out[key] = `[see Live Code Generation: ${child.length} chars]`;
+      } else {
+        out[key] = walk(child, [...path, key]);
+      }
+    }
+    return out;
+  }
+  return { input: walk(input ?? {}), artifacts };
+}
+
+function renderCodeBlock({ title, language, content, cycle_index, t_ms }) {
+  const block = el("div", "hud-block hud-code-block");
+  const header = el("div", "hud-tool-header");
+  header.appendChild(
+    el("span", "hud-tool-meta", `cycle ${padCycleIndex(cycle_index)} · ${formatElapsedMmSs(t_ms)}`),
+  );
+  header.appendChild(el("span", "hud-tool-name", title));
+  if (language) header.appendChild(el("span", "hud-code-lang", language));
+  block.appendChild(header);
+  const pre = document.createElement("pre");
+  pre.className = "hud-code";
+  pre.textContent = content.length > MAX_CODE_CHARS
+    ? `${content.slice(0, MAX_CODE_CHARS)}\n… [+${content.length - MAX_CODE_CHARS} chars]`
+    : content;
+  block.appendChild(pre);
+  return block;
+}
+
 function renderCycleHeaderBlock({ cycle_index, t_ms, status }) {
   const block = el("div", "hud-block hud-cycle-header");
   const label = `── CYCLE ${padCycleIndex(cycle_index)} ── ${formatElapsedMmSs(t_ms)} ──`;
@@ -127,9 +191,15 @@ function renderRunEndBlock(event) {
   return block;
 }
 
-function createFeed(root) {
+function createFeed(root, { title, subtitle }) {
+  const panel = el("section", "hud-panel");
+  const header = el("header", "hud-panel-header");
+  header.appendChild(el("div", "hud-panel-title", title));
+  if (subtitle) header.appendChild(el("div", "hud-panel-subtitle", subtitle));
   const stream = el("div", "hud-stream");
-  root.appendChild(stream);
+  panel.appendChild(header);
+  panel.appendChild(stream);
+  root.appendChild(panel);
   let autoScroll = true;
 
   stream.addEventListener("scroll", () => {
@@ -153,6 +223,21 @@ function createFeed(root) {
   return { append };
 }
 
+function createFeeds(root) {
+  const panels = el("div", "hud-panels");
+  root.appendChild(panels);
+  return {
+    tools: createFeed(panels, {
+      title: "Tool Calls",
+      subtitle: "structured actions sent to the stage",
+    }),
+    code: createFeed(panels, {
+      title: "Live Code Generation",
+      subtitle: "p5, SVG, and generated CSS artifacts",
+    }),
+  };
+}
+
 function createStatusBar(root) {
   const bar = el("div", "hud-status");
   bar.appendChild(el("span", "hud-status-mode", ""));
@@ -168,13 +253,18 @@ function createStatusBar(root) {
   };
 }
 
-function dispatchEvent(event, feed) {
+function appendBoth(feeds, blockFactory) {
+  feeds.tools.append(blockFactory());
+  feeds.code.append(blockFactory());
+}
+
+function dispatchEvent(event, feeds) {
   switch (event.kind) {
     case HUD_EVENT_KINDS.RUN_START:
-      feed.append(renderRunStartBlock(event));
+      appendBoth(feeds, () => renderRunStartBlock(event));
       return;
     case HUD_EVENT_KINDS.CYCLE_BEGIN:
-      feed.append(
+      appendBoth(feeds, () =>
         renderCycleHeaderBlock({
           cycle_index: event.cycle_index,
           t_ms: event.t_ms,
@@ -183,28 +273,42 @@ function dispatchEvent(event, feed) {
       );
       return;
     case HUD_EVENT_KINDS.TOOL_CALL:
-      feed.append(
-        renderToolCallBlock({
-          name: event.name,
-          input: event.input,
-          cycle_index: event.cycle_index,
-          t_ms: event.t_ms,
-        }),
-      );
+      {
+        const split = splitGeneratedFields(event.name, event.input);
+        feeds.tools.append(
+          renderToolCallBlock({
+            name: event.name,
+            input: split.input,
+            cycle_index: event.cycle_index,
+            t_ms: event.t_ms,
+          }),
+        );
+        for (const artifact of split.artifacts) {
+          feeds.code.append(
+            renderCodeBlock({
+              ...artifact,
+              cycle_index: event.cycle_index,
+              t_ms: event.t_ms,
+            }),
+          );
+        }
+      }
       return;
     case HUD_EVENT_KINDS.CYCLE_END:
       // Cycle end is implied by the next cycle begin. Only surface on
       // non-ok to make failures visible in the stream.
       if (event.status && event.status !== "ok") {
-        const block = el("div", "hud-block hud-cycle-error");
-        block.appendChild(
-          el("span", "hud-cycle-label", `└── cycle ${padCycleIndex(event.cycle_index)} ${event.status}`),
-        );
-        feed.append(block);
+        appendBoth(feeds, () => {
+          const block = el("div", "hud-block hud-cycle-error");
+          block.appendChild(
+            el("span", "hud-cycle-label", `└── cycle ${padCycleIndex(event.cycle_index)} ${event.status}`),
+          );
+          return block;
+        });
       }
       return;
     case HUD_EVENT_KINDS.RUN_END:
-      feed.append(renderRunEndBlock(event));
+      appendBoth(feeds, () => renderRunEndBlock(event));
       return;
     default:
       return;
@@ -222,7 +326,7 @@ export async function mountPosthoc({
   if (!root) throw new Error("mountPosthoc: root is required");
   if (!run_id) throw new Error("mountPosthoc: run_id is required");
 
-  const feed = createFeed(root);
+  const feeds = createFeeds(root);
   const status = createStatusBar(root);
   status.set({ mode: "POST-HOC", state: "loading…", clock_ms: 0 });
 
@@ -235,7 +339,9 @@ export async function mountPosthoc({
     summary = await res.json();
   } catch (err) {
     status.set({ state: `load failed: ${err?.message ?? err}` });
-    feed.append(el("div", "hud-block hud-cycle-error", `load failed: ${err?.message ?? err}`));
+    const message = `load failed: ${err?.message ?? err}`;
+    feeds.tools.append(el("div", "hud-block hud-cycle-error", message));
+    feeds.code.append(el("div", "hud-block hud-cycle-error", message));
     return { stop() {} };
   }
 
@@ -253,7 +359,7 @@ export async function mountPosthoc({
     const elapsed = Math.max(0, (Date.now() - start_wall) * effectiveSpeed);
     status.set({ clock_ms: elapsed, state: idx < events.length ? "playing" : "done" });
     while (idx < events.length && events[idx].t_ms <= elapsed) {
-      dispatchEvent(events[idx], feed);
+      dispatchEvent(events[idx], feeds);
       idx += 1;
     }
     if (idx < events.length) {
@@ -289,7 +395,7 @@ export async function mountLive({
   if (!root) throw new Error("mountLive: root is required");
   if (!run_id) throw new Error("mountLive: run_id is required");
 
-  const feed = createFeed(root);
+  const feeds = createFeeds(root);
   const status = createStatusBar(root);
   status.set({ mode: "LIVE", state: "connecting…", clock_ms: 0 });
 
@@ -308,7 +414,7 @@ export async function mountLive({
     return Date.now() - start_wall;
   }
 
-  feed.append(
+  appendBoth(feeds, () =>
     renderRunStartBlock({
       run_id,
       model: "claude-opus-4-7",
@@ -330,7 +436,7 @@ export async function mountLive({
         if (start_wall == null) start_wall = Date.now();
         current_cycle = patch.cycle_n ?? current_cycle;
         call_index_in_cycle = 0;
-        feed.append(
+        appendBoth(feeds, () =>
           renderCycleHeaderBlock({
             cycle_index: current_cycle,
             t_ms: now_ms(),
@@ -345,14 +451,13 @@ export async function mountLive({
       }
       const call = patchToHudToolCall(patch);
       if (!call) return;
-      feed.append(
-        renderToolCallBlock({
-          name: call.name,
-          input: call.input,
-          cycle_index: current_cycle ?? 0,
-          t_ms: now_ms(),
-        }),
-      );
+      dispatchEvent({
+        kind: HUD_EVENT_KINDS.TOOL_CALL,
+        name: call.name,
+        input: call.input,
+        cycle_index: current_cycle ?? 0,
+        t_ms: now_ms(),
+      }, feeds);
       call_index_in_cycle += 1;
     },
     onFeature: () => {
@@ -516,18 +621,22 @@ if (isDirectNodeExecution) {
       const fn = tasks.shift();
       fn();
     }
-    // At minimum we expect the status bar, stream, and several rendered blocks.
-    assert.ok(root.children.length >= 2, "root should have stream + status bar");
-    const stream = root.children[0];
+    // At minimum we expect the split panels, status bar, and rendered blocks.
+    assert.ok(root.children.length >= 2, "root should have panels + status bar");
+    const panels = root.children[0];
+    assert.equal(panels.children.length, 2, "HUD should split into tool + code panels");
     function collectText(node) {
       const self = [node.textContent, node.innerHTML].filter(Boolean).join(" ");
       const kids = (node.children || []).map(collectText).join(" ");
       return `${self} ${kids}`;
     }
-    const blob = stream.children.map(collectText).join(" | ");
+    const blob = collectText(root);
+    assert.ok(/Tool Calls/.test(blob), "tool-call panel title present");
+    assert.ok(/Live Code Generation/.test(blob), "code-generation panel title present");
     assert.ok(/opus code stream/i.test(blob), "run_start block present");
     assert.ok(/CYCLE 000/.test(blob), "cycle_begin block present");
     assert.ok(/setBackground/.test(blob), "tool_call block with name rendered");
+    assert.ok(/CSS background/.test(blob), "generated CSS routed to code panel");
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);

@@ -27,6 +27,7 @@ function formatUserMessage(
   cycle,
   sceneStateSummary,
   performancePosition = {},
+  directorStatusSummary = null,
   recentDecisionsSummary = null,
 ) {
   const block1 = JSON.stringify(cycle.block_1_scalars, null, 2);
@@ -51,6 +52,10 @@ function formatUserMessage(
     `CURRENT SCENE STATE:`,
     sceneStateSummary,
   ];
+  if (typeof directorStatusSummary === "string" && directorStatusSummary.length > 0) {
+    lines.push(``);
+    lines.push(directorStatusSummary);
+  }
   if (typeof recentDecisionsSummary === "string" && recentDecisionsSummary.length > 0) {
     lines.push(``);
     lines.push(recentDecisionsSummary);
@@ -67,15 +72,20 @@ export function buildPacket({
   mediumRules,
   tools,
   model,
-  // Raised from 2000. Output ran 500-1000 in prior runs — not strictly tight,
-  // but a composite scene (3-5 elements each with its own markup/metadata)
-  // can easily use 1500-2500 tokens for a single call. 4000 gives headroom
-  // for a dense cycle without meaningfully changing cost.
-  maxTokens = 4000,
+  // Keep live cycles responsive by default. Offline submission runs can raise
+  // this with FLB_MAX_TOKENS when they intentionally trade latency for density.
+  maxTokens = Number.parseInt(
+    typeof process !== "undefined" ? process.env.FLB_MAX_TOKENS ?? "5000" : "5000",
+    10,
+  ),
+  outputConfig = {
+    effort: typeof process !== "undefined" ? process.env.FLB_OPUS_EFFORT ?? "high" : "high",
+  },
   moodBoardBlocks = [],
   selfFrameUserBlocks = [],
   cycleOrdinal = null,
   cyclesTotal = null,
+  directorStatusSummary = null,
   recentDecisionsSummary = null,
 }) {
   const cleanCycle = stripDebug(cycle);
@@ -83,6 +93,7 @@ export function buildPacket({
     cleanCycle,
     sceneStateSummary,
     { cycleOrdinal, cyclesTotal },
+    directorStatusSummary,
     recentDecisionsSummary,
   );
 
@@ -119,6 +130,7 @@ export function buildPacket({
   return {
     model,
     max_tokens: maxTokens,
+    output_config: outputConfig,
     system,
     tools,
     messages: [
@@ -221,6 +233,28 @@ if (isDirectNodeExecution) {
     assert.match(packet.messages[0].content, /PERFORMANCE POSITION: selected-run cycle 9 of 16 \(56% through the run\)/);
   });
 
+  t("buildPacket defaults to live-safe token budget and high effort", () => {
+    const savedMax = process.env.FLB_MAX_TOKENS;
+    const savedEffort = process.env.FLB_OPUS_EFFORT;
+    delete process.env.FLB_MAX_TOKENS;
+    delete process.env.FLB_OPUS_EFFORT;
+    try {
+      const packet = buildPacket({
+        cycle: fakeCycle,
+        sceneStateSummary: "empty",
+        hijazBase: "BASE",
+        mediumRules: "RULES",
+        tools: [],
+        model: "m",
+      });
+      assert.equal(packet.max_tokens, 5000);
+      assert.deepEqual(packet.output_config, { effort: "high" });
+    } finally {
+      if (savedMax !== undefined) process.env.FLB_MAX_TOKENS = savedMax;
+      if (savedEffort !== undefined) process.env.FLB_OPUS_EFFORT = savedEffort;
+    }
+  });
+
   t("with self-frame user blocks, messages[0].content becomes an array with user text first", () => {
     const selfFrameUserBlocks = [
       { type: "text", text: "Previous frame ..." },
@@ -319,6 +353,30 @@ if (isDirectNodeExecution) {
     const decideIdx = text.indexOf("Decide what to do");
     assert.ok(sceneIdx >= 0 && recentIdx > sceneIdx && decideIdx > recentIdx,
       `expected order: CURRENT SCENE STATE < RECENT DECISIONS < Decide what to do; got ${sceneIdx},${recentIdx},${decideIdx}`);
+  });
+
+  t("directorStatusSummary inserts before RECENT DECISIONS", () => {
+    const recent = 'RECENT DECISIONS (prior 1 cycle; earlier first):\n  cycle 2: addText "hi" (elem_0001)';
+    const director = "SHOW DIRECTOR STATUS:\nIMAGE CADENCE: DUE.";
+    const packet = buildPacket({
+      cycle: fakeCycle,
+      sceneStateSummary: "empty",
+      hijazBase: "BASE",
+      mediumRules: "RULES",
+      tools: [],
+      model: "m",
+      directorStatusSummary: director,
+      recentDecisionsSummary: recent,
+    });
+    const text = packet.messages[0].content;
+    const sceneIdx = text.indexOf("CURRENT SCENE STATE:");
+    const directorIdx = text.indexOf("SHOW DIRECTOR STATUS:");
+    const recentIdx = text.indexOf("RECENT DECISIONS");
+    const decideIdx = text.indexOf("Decide what to do");
+    assert.ok(
+      sceneIdx >= 0 && directorIdx > sceneIdx && recentIdx > directorIdx && decideIdx > recentIdx,
+      `expected order: CURRENT SCENE STATE < SHOW DIRECTOR STATUS < RECENT DECISIONS < Decide; got ${sceneIdx},${directorIdx},${recentIdx},${decideIdx}`,
+    );
   });
 
   t("recentDecisionsSummary survives mood-board + self-frame composition (still in user text block)", () => {

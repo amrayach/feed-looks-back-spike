@@ -7,9 +7,9 @@
     <style>
       :root {
         color-scheme: dark;
-        --show-bg: #050505;
-        --show-rule: rgba(231, 199, 138, 0.16);
-        --show-text: rgba(245, 235, 215, 0.82);
+        --show-bg: #070507;
+        --show-rule: rgba(226, 179, 194, 0.2);
+        --show-text: rgba(244, 226, 235, 0.84);
       }
 
       html,
@@ -28,7 +28,7 @@
         grid-template-columns: minmax(0, 1fr) clamp(320px, 28vw, 520px);
         width: 100vw;
         height: 100vh;
-        background: #050505;
+        background: var(--show-bg);
       }
 
       .show-stage,
@@ -39,12 +39,12 @@
       }
 
       .show-stage {
-        background: #070709;
+        background: #080508;
       }
 
       .show-hud {
         border-left: 1px solid var(--show-rule);
-        background: #0b0a08;
+        background: #100a10;
       }
 
       iframe {
@@ -61,14 +61,14 @@
         align-items: center;
         justify-content: center;
         padding: 2rem;
-        color: #f4d9bf;
-        background: #120f0d;
+        color: #f4e2eb;
+        background: #160d15;
       }
 
       @media (max-width: 980px) {
         .show-root {
           grid-template-columns: 1fr;
-          grid-template-rows: minmax(0, 1fr) minmax(220px, 32vh);
+          grid-template-rows: minmax(0, 1fr) minmax(300px, 42vh);
         }
 
         .show-hud {
