@@ -1,0 +1,53 @@
+{
+  "weak_cycles": [
+    {
+      "cycle": 1,
+      "issue": "Re-adds a 'thin line of moonlight on still water' SVG that already exists from cycle 0 with nearly identical markup — duplicates the durable anchor instead of letting it hold.",
+      "suggestion": "Drop the redundant addSVG and only place the 'alone in the room' text; trust the cycle-0 anchor to breathe."
+    },
+    {
+      "cycle": 10,
+      "issue": "fadeElement targets 'elem_0002' which is the cycle-2 solitary silhouette image, not the 'early opening text' the plan calls to retire. This contradicts the stated retire_at for the opening text and prematurely loses a planted figure.",
+      "suggestion": "Fade the cycle-1 text element instead (the 'alone in the room' fragment), preserving the silhouette anchor."
+    },
+    {
+      "cycle": 16,
+      "issue": "fadeElement again targets 'elem_0002' (already faded at cycle 10) — a no-op that mis-tracks IDs and fails to actually retire the warm bloom / pivot composite as the plan specifies.",
+      "suggestion": "Fade the cycle-7 composite group (group_0007) here per plan retire_at, or the warm bloom SVG specifically; verify IDs against actual element registry."
+    },
+    {
+      "cycle": 17,
+      "issue": "Tries to fade 'group_0013' but that group is the muhayyar arrival composite which is supposed to remain dominant through cycle 16 and only fully retire later; also paletteShift duplicates the cycle-16 shift with identical params.",
+      "suggestion": "Fade group_0007 (first pivot composite, due to retire at 16) and let group_0013 linger; skip the redundant paletteShift or use a different target."
+    },
+    {
+      "cycle": 20,
+      "issue": "Empty tool_calls but rationale claims 'feather settles via transformElement — slow rotation' — the promised gesture never executes; the plan's drift action is unrealized.",
+      "suggestion": "Either invoke transformElement on the feather (rotation/translate) or call animatePreset('drift') on it — make the stated intent real."
+    },
+    {
+      "cycle": 21,
+      "issue": "fadeElement targets 'elem_0006' which corresponds to the cycle-6 warm horizon SVG — correct intent — but the ID assumption is fragile and there's no other gesture to mark the phrase break as composition.",
+      "suggestion": "Confirm ID via semantic_label lookup; consider also a subtle paletteShift or holdFrame to make the stillness deliberate."
+    },
+    {
+      "cycle": 22,
+      "issue": "Plan called for textAnimate wordByWord on the existing 'what the room held' fragment plus a moonlight breath; instead this re-adds the same text as a new element, creating a duplicate rather than reanimating.",
+      "suggestion": "Use textAnimate on the existing cycle-13 text and transformElement(scale) on the moonlight SVG; do not duplicate text content."
+    },
+    {
+      "cycle": 28,
+      "issue": "fadeElement targets 'elem_0018' (back-at-window image) but the plan also specifies fading head-bowed, loose linen, and p5 breath by this point — only one element retires when several should.",
+      "suggestion": "Issue multiple fades (head-bowed image, loose linen, p5 breath) so the final tableau truly contracts to moonlight + feather + text."
+    },
+    {
+      "cycle": 29,
+      "issue": "Fades group_0007 (already retired at 17 attempt) and group_0013, but does not explicitly fade the feather, breath p5, dusk figures, or candle palm — the 'fade everything except moonlight and text' is incomplete and feather contradicts plan (it should remain as part of foreshadow payoff or be explicitly retired).",
+      "suggestion": "Per plan ('moonlight on water alone'), fade all remaining images/p5/feather; if the feather is meant to remain, update plan note. Use semantic_label-based fades to be ID-robust."
+    }
+  ],
+  "global_notes": "The composition has a strong, coherent arc with thoughtful foreshadow pairs (moonlight 0→13→29, feather 4→27, breath 9→22) and a paradoxical quiet third tahwil that lands well. Palette progression and anticipation offsets are carefully matched to the hijaz/muhayyar trajectory. The main weakness is element-ID hygiene during the descent: several fadeElement calls in cycles 10, 16, 17, 21, 28, 29 appear to guess IDs and either no-op, retire the wrong element, or under-retire — undermining the planned final tableau contraction. Cycles 20 and 22 also drop promised gestures (transformElement on feather; textAnimate wordByWord) in favor of either silence or duplicate placement. Recommend a pass that (a) resolves fades by semantic_label rather than positional IDs, (b) realizes the stated transform/animate gestures rather than skipping or duplicating, and (c) issues bulk retirement at cycle 28–29 so the closing tableau truly reduces to moonlight + one text fragment as the plan promises.",
+  "model": "claude-sonnet-4-5",
+  "thinking_budget": 16384,
+  "critiqued_at": "2025-01-15T00:05:00Z"
+}
