@@ -7,7 +7,7 @@ __pycache__/
 
 corpus/
 corpus_sample*/
-corpus_bashar_record_*/
+corpus_recording_*/
 audio/
 
 .DS_Store
@@ -42,3 +42,31 @@ pnpm-debug.log*
 playwright-report/
 .playwright-screenshots/
 test-results/
+
+# Codex / preflight artifacts (local-only)
+.codex/
+node/.codex-preflight-write-check
+
+# Reference photos with unrecoverable provenance — kept locally for
+# bake-time iteration; excluded from the public repo for rights diligence.
+# NOTE: these are already tracked in earlier history; this pattern only
+# prevents future re-adds. Pre-publish action is to `git rm --cached` each
+# path so the next commit drops them from the index.
+node/canon/reference_photos/02_*.jpg
+node/canon/reference_photos/05_*.jpg
+node/canon/reference_photos/07_*.jpg
+node/canon/reference_photos/09_*.jpg
+node/canon/reference_photos/10_*.jpg
+node/canon/reference_photos/11_*.jpg
+node/canon/reference_photos/12_*.jpg
+
+# Internal handoff/log docs not intended for public review.
+# NOTE: most of these are already tracked from earlier sessions; this
+# pattern only prevents future re-adds. Pre-publish action is to
+# `git rm --cached <path>` for each, then commit.
+docs/STATUS_FOR_BASHAR.md
+docs/COORDINATOR_SESSION_HANDOFF_*_evening.md
+docs/BAKE_MODE_HANDOFF_*.md
+docs/ULTRAREVIEW_*.md
+docs/2026-*-session-*.md
+docs/superpowers/

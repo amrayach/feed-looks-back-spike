@@ -325,8 +325,8 @@ def detect_phrase_break(current: dict, history: List[dict]) -> bool:
 
 # ─── Hijaz clause selection (state-transition logic) ──────────────────────
 # Block 2 enrichment clauses used by ``generate_prose``. Stored as named
-# constants so the prose remains a one-line edit if Bashar wants to tweak
-# wording during the calibration pass.
+# constants so the prose remains a one-line edit during a future
+# calibration pass.
 TAHWIL_FIRST_TIME: str = "Tahwil: tonal gravity has shifted to the ghammaz."
 TAHWIL_SUSTAINED: str = "Sustained on ghammaz; upper jins active."
 RETURNING_CLAUSE: str = "Returning motion toward the tonic."
@@ -379,9 +379,9 @@ def _select_tonal_gravity_clause(
 
     The transitional branch returns ``None`` so cycles with no Hijaz event
     keep their prose generic. The contrast between cycles that lead with a
-    Hijaz clause and cycles that don't is itself meaningful — Bashar's
-    direction during calibration. ``AMBIGUOUS_CLAUSE`` is retained as a named
-    constant in case it is brought back during a future tuning pass.
+    Hijaz clause and cycles that don't is itself meaningful and is what
+    drives the calibration policy. ``AMBIGUOUS_CLAUSE`` is retained as a
+    named constant in case it is brought back during a future tuning pass.
 
     Exact returning/suppression decisions require more than the minimum
     2-cycle history used by ``detect_tonal_gravity`` alone, because we must

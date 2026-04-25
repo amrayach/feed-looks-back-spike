@@ -68,9 +68,6 @@ except ImportError:
     )
     from sparklines import generate_sparkline  # type: ignore[no-redef]
 
-import librosa
-
-
 # ─── Constants ─────────────────────────────────────────────────────────────
 PITCH_CLASSES: Tuple[str, ...] = (
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
@@ -147,6 +144,39 @@ def _compute_pitch_classes(
 
 
 # ─── Onset density and peak strength in a window ──────────────────────────
+def _peak_pick_numpy(
+    values: np.ndarray,
+    *,
+    pre_max: int,
+    post_max: int,
+    pre_avg: int,
+    post_avg: int,
+    delta: float,
+    wait: int,
+) -> np.ndarray:
+    """
+    Pure-NumPy equivalent of the small ``librosa.util.peak_pick`` subset this
+    pipeline needs. Avoids numba's compiled gufunc path, which can segfault in
+    restricted/sandboxed environments while importing librosa peak picking.
+    """
+    peaks: list[int] = []
+    last_peak = -wait - 1
+    for i, value in enumerate(values):
+        max_start = max(0, i - pre_max)
+        max_end = min(values.size, i + post_max + 1)
+        avg_start = max(0, i - pre_avg)
+        avg_end = min(values.size, i + post_avg + 1)
+        if value < np.max(values[max_start:max_end]):
+            continue
+        if value < (float(np.mean(values[avg_start:avg_end])) + delta):
+            continue
+        if i <= last_peak + wait:
+            continue
+        peaks.append(i)
+        last_peak = i
+    return np.asarray(peaks, dtype=np.int64)
+
+
 def _compute_onset_density(
     onset_strength: np.ndarray,
     onset_times: np.ndarray,
@@ -156,8 +186,8 @@ def _compute_onset_density(
     """
     Return ``(onset_density_per_s, onset_peak_strength)`` for the window.
 
-    Workflow: slice the onset-strength envelope to the window, run
-    ``librosa.util.peak_pick`` for indices, filter peaks below the file's
+    Workflow: slice the onset-strength envelope to the window, run a local
+    peak picker for indices, filter peaks below the file's
     ``onset_peak_threshold``, divide by window duration.
     """
     win_values, _win_times = _slice_window(onset_strength, onset_times, snapshot_time)
@@ -165,7 +195,7 @@ def _compute_onset_density(
         return 0.0, 0.0
     onset_peak_strength = float(np.max(win_values))
 
-    peak_idx = librosa.util.peak_pick(
+    peak_idx = _peak_pick_numpy(
         win_values,
         pre_max=PEAK_PICK_PRE_MAX,
         post_max=PEAK_PICK_POST_MAX,
