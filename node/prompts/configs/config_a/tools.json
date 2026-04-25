@@ -140,8 +140,8 @@
           "description": "Free-form position string. Examples: \"background\", \"upper-right quarter\", \"full bleed\", \"small inset, lower-left\"."
         },
         "lifetime_s": {
-          "type": "number",
-          "description": "Optional. Omit this field and the image fades naturally after ~25 s with an ~8 s dissolve — this is almost always what you want, because figurative turnover gives the scene its breathing quality. Pass lifetime_s: null (explicitly) to make ONE foundational image that anchors the whole performance. Pass a smaller number (e.g. 8) for a deliberate flash."
+          "type": ["number", "null"],
+          "description": "Optional. Omit this field and the image fades naturally after ~25 s with an ~8 s dissolve — this is almost always what you want, because figurative turnover gives the scene its breathing quality. Pass JSON null (not the string \"null\") to make ONE foundational image that anchors the whole performance. Pass a smaller number (e.g. 8) for a deliberate flash."
         },
         "reactivity": {
           "type": "array",

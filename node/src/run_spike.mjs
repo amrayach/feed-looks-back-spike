@@ -14,6 +14,8 @@ import {
   formatSummary,
   saveState,
   snapshotCycle,
+  recordDecision,
+  formatRecentDecisions,
 } from "./scene_state.mjs";
 import { applyToolCallDetailed } from "./tool_handlers.mjs";
 import { autoFadeDurationForElement } from "./patch_emitter.mjs";
@@ -522,6 +524,7 @@ async function processCycleReal({
     }
     toolResults.push({ tool_use_id: block.id, name: block.name, result: detailed.result });
     patches.push(...detailed.patches);
+    recordDecision(state, { toolUseBlock: block, result: detailed.result });
   }
 
   return {
@@ -556,6 +559,7 @@ async function processCycleDry({
     const detailed = await applyToolCallDetailedImpl(state, block, { fetchImageImpl });
     toolResults.push({ tool_use_id: block.id, name: block.name, result: detailed.result });
     patches.push(...detailed.patches);
+    recordDecision(state, { toolUseBlock: block, result: detailed.result });
   }
 
   return {
@@ -859,6 +863,7 @@ async function run(options) {
         packet = buildPacket({
           cycle,
           sceneStateSummary: formatSummary(state),
+          recentDecisionsSummary: formatRecentDecisions(state.decision_history, cycle.cycle_index),
           hijazBase,
           mediumRules,
           tools,
