@@ -44,6 +44,7 @@ playwright-report/
 test-results/
 
 # Codex / preflight artifacts (local-only)
+.codex
 .codex/
 node/.codex-preflight-write-check
 
@@ -61,11 +62,14 @@ node/canon/reference_photos/11_*.jpg
 node/canon/reference_photos/12_*.jpg
 
 # Internal handoff/log docs not intended for public review.
-# NOTE: most of these are already tracked from earlier sessions; this
-# pattern only prevents future re-adds. Pre-publish action is to
-# `git rm --cached <path>` for each, then commit.
+# Patterns match at any depth so root + subdir handoffs are covered.
+SESSION_*_HANDOFF.md
+SESSION_*_DESIGN_HANDOFF.md
+SESSION_*_LOG.md
+PHASE_*_SESSION_HANDOFF.md
 docs/STATUS_FOR_BASHAR.md
-docs/COORDINATOR_SESSION_HANDOFF_*_evening.md
+docs/COORDINATOR_SESSION_HANDOFF_*.md
+docs/SESSION_*.md
 docs/BAKE_MODE_HANDOFF_*.md
 docs/ULTRAREVIEW_*.md
 docs/2026-*-session-*.md
