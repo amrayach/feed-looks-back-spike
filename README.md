@@ -10,7 +10,7 @@
 
 </div>
 
-> *Cover image goes here once generated — paste the prompt from [`docs/ASSET_PROMPTS.md`](docs/ASSET_PROMPTS.md) into ChatGPT (or any image generator) and drop the result at `assets/cover/cover.png`.*
+![The Feed Looks Back cover image: moonlight catching a still water surface, with deep warm shadow left open for title overlay.](assets/cover/cover.png)
 
 ---
 
