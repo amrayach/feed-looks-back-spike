@@ -1,0 +1,23 @@
+The Feed Looks Back
+
+The original project code and documentation are licensed under the MIT License.
+See LICENSE.
+
+Bundled third-party code:
+
+- node/vendor/p5/p5.min.js is p5.js 2.2.3, licensed under LGPL-2.1.
+  Its license text is included at node/vendor/p5/LICENSE, and the vendored
+  README records the upstream source, version, and refresh procedure.
+
+Bundled reference images:
+
+- node/canon/reference_photos/ contains the public reference photos used by
+  the bake pipeline. Their sources, authors, and licenses are recorded in
+  node/canon/reference_photos/ATTRIBUTION.md.
+
+Generated demo artifacts:
+
+- bake_song1/ and bake_song5/ contain generated JSON/HTML/PNG artifacts used
+  for the submitted demo replay. They are included as project artifacts under
+  the repository license unless a nested attribution file says otherwise.
+

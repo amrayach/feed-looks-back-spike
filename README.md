@@ -344,3 +344,16 @@ restricted sandboxes, run those from a normal shell or allow localhost binding.
 - See `docs/SUBMISSION.md` for the concise submission runbook.
 - See `docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md` for the final audit, Code
   Review Graph findings, validation results, and residual risks.
+
+## License
+
+The original project code and documentation are available under the
+[MIT License](LICENSE).
+
+Bundled third-party code and media keep their own terms:
+
+- `node/vendor/p5/p5.min.js` is p5.js 2.2.3 under LGPL-2.1; see
+  `node/vendor/p5/LICENSE` and `node/vendor/p5/README.md`.
+- Public reference photos are documented in
+  `node/canon/reference_photos/ATTRIBUTION.md`.
+- Additional licensing notes are collected in [NOTICE](NOTICE).

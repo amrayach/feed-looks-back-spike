@@ -2,6 +2,7 @@
   "name": "feed-looks-back-node",
   "version": "0.1.0",
   "description": "Feed Looks Back — Session 2 Node runner. Reads cycle JSONs from the Python pipeline, calls Claude Opus 4.7 with each cycle, maintains scene state, renders final HTML.",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "engines": {

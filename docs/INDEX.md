@@ -41,6 +41,7 @@ You are looking at `docs/INDEX.md`. The repo's front door is [`../README.md`](..
 | [`ASSET_PROMPTS.md`](ASSET_PROMPTS.md) | reference | ChatGPT prompts for logo, cover, thumbnail, social, backgrounds |
 | [`FINAL_DEEP_DIVE_CHECK_2026_04_25.md`](FINAL_DEEP_DIVE_CHECK_2026_04_25.md) | audit | Final audit, Code Review Graph findings, residual risks |
 | [`../assets/README.md`](../assets/README.md) | reference | Assets directory layout and naming conventions |
+| [`../LICENSE`](../LICENSE) / [`../NOTICE`](../NOTICE) | legal | Project license and third-party/media notices |
 
 ---
 
@@ -69,4 +70,5 @@ You are looking at `docs/INDEX.md`. The repo's front door is [`../README.md`](..
 
 - The repo's front door: [`../README.md`](../README.md)
 - The visual asset prompts: [`ASSET_PROMPTS.md`](ASSET_PROMPTS.md)
+- The project license and notices: [`../LICENSE`](../LICENSE), [`../NOTICE`](../NOTICE)
 - The runtime aesthetic source of truth: `../node/prompts/bayati_base.md`
