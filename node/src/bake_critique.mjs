@@ -114,7 +114,7 @@ function parseCritiqueFromContent(content, modelName, thinkingBudget) {
   return parsed;
 }
 
-function parseRefineFromContent(content, cycleJson, weakEntry, modelName, thinkingBudget) {
+function parseRefineFromContent(content, cycleJson, weakEntry, modelName, thinkingBudget, stopReason) {
   const { rationale, toolCalls } = extractRationaleAndToolCalls(content);
   const sig = createHash("sha256")
     .update(JSON.stringify({ cycle_index: cycleJson.cycle_index, rationale, toolCalls }))
@@ -127,7 +127,7 @@ function parseRefineFromContent(content, cycleJson, weakEntry, modelName, thinki
     rationale,
     tool_calls:   toolCalls,
     input_signature: sig,
-    stop_reason:  "end_turn",
+    stop_reason:  stopReason ?? "end_turn",
     usage:        { input_tokens: 0, output_tokens: 0 },
     baked_at:     new Date().toISOString(),
     refined_from: `cycle_${String(cycleJson.cycle_index).padStart(3, "0")}.json`,
@@ -163,12 +163,11 @@ export async function runCritiquePass({
   // ── Step 1: Holistic critique ──────────────────────────────────
 
   const critiquePrompt = buildCritiquePrompt(critiqueTemplate, plan, cycles);
-  const allCyclesBody  = critiquePrompt; // full rendered prompt as the user body
 
   const critiqueRunner = _runCritique || runCritique;
   const critiqueResult = await critiqueRunner({
-    systemPrompt: critiquePrompt,
-    allCycles:    allCyclesBody,
+    systemPrompt: null,
+    allCycles:    critiquePrompt,
     thinkingBudget,
     effort,
     maxOutputTokens,
@@ -218,6 +217,7 @@ export async function runCritiquePass({
       weakEntry,
       refineResult.model,
       thinkingBudget,
+      refineResult.stop_reason,
     );
 
     // Override usage if SDK returned real usage

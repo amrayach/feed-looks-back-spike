@@ -123,7 +123,7 @@ function inRange(idx, range) {
 
 async function bakeOneCycle({ cycle, layout, plan, cycles,
                               decisionHistory, system, tools, template,
-                              thinkingBudget, maxOutputTokens, mockFixtureDir, client }) {
+                              thinkingBudget, effort, maxOutputTokens, mockFixtureDir, client }) {
   const intent = plan.per_cycle_intent[cycle.cycle_index];
   const act = plan.overall_arc.find(
     (a) => intent.active_act === a.act_index,
@@ -170,7 +170,7 @@ async function bakeOneCycle({ cycle, layout, plan, cycles,
     response = await callBake({
       system, userMessage, tools,
       model: "claude-opus-4-7",
-      thinkingBudget, maxTokens: maxOutputTokens,
+      thinkingBudget, effort, maxTokens: maxOutputTokens,
       client,
     });
   }
@@ -193,7 +193,8 @@ async function bakeOneCycle({ cycle, layout, plan, cycles,
 }
 
 export async function runCycles({ bakeDir, corpus, concurrency = 5,
-                                  thinkingBudget = 16384, maxOutputTokens = 8192,
+                                  thinkingBudget = 16384, effort = "medium",
+                                  maxOutputTokens = 8192,
                                   cyclesRange = null, resume = false,
                                   mockFixtureDir = null, client = null } = {}) {
   if (!bakeDir || !corpus) throw new Error("--bake-dir and --corpus required");
@@ -261,7 +262,7 @@ export async function runCycles({ bakeDir, corpus, concurrency = 5,
       return await bakeOneCycle({
         cycle, layout, plan, cycles,
         decisionHistory: snapshotHistory,
-        system, tools, template, thinkingBudget, maxOutputTokens,
+        system, tools, template, thinkingBudget, effort, maxOutputTokens,
         mockFixtureDir, client,
       });
     }));
