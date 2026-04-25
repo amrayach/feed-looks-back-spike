@@ -1,0 +1,38 @@
+{
+  "weak_cycles": [
+    {
+      "cycle": 5,
+      "issue": "Composite scene introduces three new elements (bloom SVG, text, linen image) at once before the muhayyar peak in cycle 8, pre-spending the arrival's weight and crowding the room. Linen also duplicates the anchor introduced fresh in cycle 14.",
+      "suggestion": "Reduce to bloom + text only; defer linen to its planned introduction at cycle 14 so the muhayyar in cycle 8 still has room to bloom as the first true climactic weight."
+    },
+    {
+      "cycle": 13,
+      "issue": "Two placements (echoed moonlight SVG + moonlight-on-water image) at once in a dense middle act risks crowding and duplicates the same semantic in two media. The image especially competes with the SVG echo without adding new register.",
+      "suggestion": "Drop the addImage; let the SVG echo carry the moonlight memory alone, preserving the act-3 instruction to vary motifs rather than invent."
+    },
+    {
+      "cycle": 16,
+      "issue": "Plan calls for fading 'two aging elements' for the deep exhale, but only one fadeElement is issued (plus a paletteShift that warms hue +15 rather than cooling toward the slate blue-grey palette the plan specifies for act 4).",
+      "suggestion": "Add a second fadeElement (e.g., the bloom SVG from cycle 5 or the higher moonlight from cycle 3) and shift palette toward cooler blue-grey (hue toward -20 to -30, lower saturation) per the act 4 palette progression."
+    },
+    {
+      "cycle": 18,
+      "issue": "paletteShift uses hue +12 (warming) but plan says 'cooling slightly' toward slate blue-grey. Direction contradicts the descent's intended cool palette.",
+      "suggestion": "Use negative hue shift (e.g., -15 to -25) with reduced saturation to actually cool the room as planned."
+    },
+    {
+      "cycle": 24,
+      "issue": "fadeElement targets elem_0019 by guessed id without verification; risks fading the wrong anchor. Also adds a new text fragment ('what stayed') in the final-tableau act that the plan said should 'stop opening new threads.'",
+      "suggestion": "Use semantic_label-based fade if available, or fade the back-at-window/breath-on-glass anchors named in retire_at. Skip the new text — the existing testimony fragments already carry the closing voice."
+    },
+    {
+      "cycle": 26,
+      "issue": "pulseScene is a punctuation gesture; plan explicitly says 'not a punctuation, an exhale of light.' The 0.18 intensity flash contradicts the closing intent.",
+      "suggestion": "Drop pulseScene; rely on the slow paletteShift alone, or replace with a gentle scaleElement/morphElement on the moonlight line for a sustained lift."
+    }
+  ],
+  "global_notes": "The composition has a strong, disciplined arc: a sparse opening, a credible muhayyar bloom at cycle 8, careful echo work in the late ascent, and a held final tableau. Element vocabulary is coherent and foreshadow pairs largely pay off (moonlight 0→8→21, palm 4→22, flame 9→26). Main weaknesses cluster around (a) over-stuffing the pre-muhayyar cycle 5 with material that should arrive later, (b) palette directions in act 4 that warm when the plan specifies cooling, and (c) two small breaches of the 'no new threads' rule in the final tableau (cycle 24 text, cycle 26 pulse). Fixing those tightens the arc considerably without rewriting structure.",
+  "model": "claude-sonnet-4-5",
+  "thinking_budget": 2000,
+  "critiqued_at": "2025-01-27T12:30:00Z"
+}
