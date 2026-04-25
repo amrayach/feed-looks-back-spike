@@ -1,22 +1,72 @@
+<div align="center">
+
 # The Feed Looks Back
 
-A live audiovisual performance system. A musician plays in a tradition a
-general-purpose model wasn't optimised for. Claude Opus 4.7 listens once per
-musical phrase, reads the moment, and authors the visuals on stage —
-text that fades in, photographic references that arrive, p5 sketches and SVG
-fragments, every element subtly bound to the music. Earnest, attentive,
-almost right. The gap between what the music is and what the screen returns
-is the piece.
+***A live audiovisual performance system where Claude Opus 4.7 listens once per musical phrase and authors the visuals on stage — earnest, attentive, almost right.***
 
-Built for the **Build with Opus 4.7** hackathon (April 2026). Submission
-target: *Most Creative Opus 4.7 Exploration* + *Keep Thinking*.
+[![Build with Opus 4.7](https://img.shields.io/badge/Build_with-Opus_4.7-c4894a?style=flat-square)](https://www.anthropic.com/) [![Runtime](https://img.shields.io/badge/runtime-node_%2B_python-4a6670?style=flat-square)](#setup) [![Stage](https://img.shields.io/badge/stage-DOM_%2B_SVG_%2B_p5-2a1f14?style=flat-square)](#two-temporal-modes) [![Status](https://img.shields.io/badge/status-submission_ready-8b4a2a?style=flat-square)](docs/SUBMISSION.md)
 
-For the polished public-facing one-pager, see
-[`docs/PROJECT_DESCRIPTION.md`](docs/PROJECT_DESCRIPTION.md). For the
-submission runbook, see [`docs/SUBMISSION.md`](docs/SUBMISSION.md). For the
-final-pass audit (validation matrix, Code Review Graph results, residual
-risks), see
-[`docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md`](docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md).
+<sub>Built for the **Build with Opus 4.7** hackathon · April 2026 · Submission target: *Most Creative Opus 4.7 Exploration* + *Keep Thinking*</sub>
+
+</div>
+
+> *Cover image goes here once generated — paste the prompt from [`docs/ASSET_PROMPTS.md`](docs/ASSET_PROMPTS.md) into ChatGPT (or any image generator) and drop the result at `assets/cover/cover.png`.*
+
+---
+
+## What it is
+
+A musician plays in a tradition a general-purpose model wasn't optimised for. Claude Opus 4.7 listens once per musical phrase, reads the moment, and authors the visuals on stage — text that fades in, photographic references that arrive, p5 sketches and SVG fragments, every element subtly bound to the music. Earnest, attentive, almost right. The gap between what the music is and what the screen returns is the piece.
+
+## Visual overview
+
+In the demo, the audience sees a performance surface rather than a developer
+tool. The music drives the timing; Opus authors the scene; the HUD makes the
+authorship legible.
+
+```mermaid
+flowchart LR
+    accTitle: Viewer-facing overview
+    accDescr: The viewer hears the guitar recording, watches the browser stage accumulate visual elements, and sees a HUD stream that exposes Opus 4.7's tool calls and rationale as authorship evidence.
+
+    guitar[("guitar recording<br/>or live input")]
+    model["Opus 4.7<br/>listens + authors"]
+
+    subgraph screen ["what appears in the demo"]
+        direction TB
+        stage["main stage<br/>text · SVG · photos · p5 sketches"]
+        motion["Chain A effects<br/>breathing · bloom · erosion · drift"]
+        hud["code-stream HUD<br/>tool calls · cycles · model decisions"]
+    end
+
+    guitar --> model
+    model --> stage
+    stage --> motion
+    model --> hud
+
+    classDef sound fill:#fef3c7,stroke:#ca8a04,color:#713f12
+    classDef modelc fill:#dbeafe,stroke:#2563eb,color:#1e3a5f
+    classDef screenc fill:#fce7f3,stroke:#be185d,color:#831843
+
+    class guitar sound
+    class model modelc
+    class stage,motion,hud screenc
+```
+
+| Surface | What it shows | Why it matters |
+|---|---|---|
+| Stage | The accumulated composition: text fragments, photographic anchors, SVG forms, p5 sketches, fades, palette shifts, transforms | The artwork itself |
+| HUD | Cycle-by-cycle Opus tool calls and model-authored decisions | Proof that Opus is authoring, not decorating a preset visualizer |
+| Chain A | Local 60fps motion tied to audio features and structural events | Keeps the scene alive between model calls |
+| Bake replay | A deterministic performance of Opus's offline composition score | Makes the final video clean while preserving model authorship |
+
+## Quick links
+
+| 🚀 Run it | 📖 Read it | 📤 Submit it |
+|---|---|---|
+| [Setup](#setup) · [Live / API run](#live--api-run) · [Bake mode](#bake-mode) · [Validation](#validation) | [Visual overview](#visual-overview) · [Two temporal modes](#two-temporal-modes) · [End-to-end architecture](#end-to-end-architecture) · [Repository map](#repository-map) · [Documentation map](#documentation-map) | [Submission notes](#submission-notes) · [`docs/SUBMISSION.md`](docs/SUBMISSION.md) · [`docs/PROJECT_DESCRIPTION.md`](docs/PROJECT_DESCRIPTION.md) · [`docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md`](docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md) |
+
+For the visual map of how everything connects, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). For the curated entry into the full doc set, see [`docs/INDEX.md`](docs/INDEX.md).
 
 ## Two temporal modes
 
@@ -33,6 +83,84 @@ The submission branch supports two complementary paths:
   sync with audio. The composing stance.
 
 Same prompts, same tools, different relationship to time.
+
+## End-to-end architecture
+
+```mermaid
+flowchart TB
+    accTitle: End-to-end Feed Looks Back architecture
+    accDescr: Audio is analyzed by Python into per-cycle features. Node builds Opus packets, receives tool calls, converts them into patches, and serves a browser stage. Live mode calls Opus during the run; bake mode runs three offline Opus passes and replays the refined score through the same stage.
+
+    audio[("audio<br/>WAV or live input")]
+
+    subgraph py ["Python DSP"]
+        direction TB
+        features["features.py<br/>RMS · centroid · onsets · chroma"]
+        corpus["generate_corpus.py<br/>cycle_NNN.json"]
+        stream["stream_features.py<br/>60Hz feature track / live stream"]
+    end
+
+    subgraph node ["Node runtime"]
+        direction TB
+        packet["packet_builder.mjs<br/>prompt + scene + features"]
+        runner["run_spike.mjs<br/>live loop / baked replay"]
+        handlers["tool_handlers.mjs<br/>validate + mutate scene"]
+        patches["patch_emitter.mjs<br/>browser patches"]
+        server["stage_server.mjs<br/>HTTP + WebSocket"]
+    end
+
+    subgraph opus ["Opus 4.7 authoring"]
+        direction TB
+        live_opus["live cycle call<br/>one decision window"]
+        bake1["Pass 1<br/>composition plan"]
+        bake2["Pass 2<br/>parallel cycle execution"]
+        bake3["Pass 3<br/>critique + refine"]
+    end
+
+    subgraph browser ["Browser stage"]
+        direction TB
+        reducer["scene_reducer.mjs<br/>DOM/SVG/images"]
+        p5["p5_sandbox.mjs<br/>isolated sketches"]
+        chain["chain_a.mjs<br/>audio-reactive effects"]
+        hud["HUD<br/>visible tool stream"]
+        bus["feature_bus.mjs<br/>runtime audio values"]
+    end
+
+    baked[("bake_song*/<br/>composition + cycles + critique")]
+    output[("stage + HUD<br/>recorded demo")]
+
+    audio --> features --> corpus --> packet
+    audio --> stream --> bus
+    packet --> runner
+
+    runner --> live_opus --> runner
+    packet --> bake1 --> bake2 --> bake3 --> baked --> runner
+
+    runner --> handlers --> patches --> server --> reducer
+    server --> hud
+    reducer --> p5
+    reducer --> chain
+    bus --> chain
+    bus --> p5
+    reducer --> output
+    hud --> output
+
+    classDef io fill:#f5f5f5,stroke:#525252,color:#262626
+    classDef pyc fill:#fef3c7,stroke:#ca8a04,color:#713f12
+    classDef nodec fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef opusc fill:#dbeafe,stroke:#2563eb,color:#1e3a5f
+    classDef browserc fill:#fce7f3,stroke:#be185d,color:#831843
+
+    class audio,baked,output io
+    class features,corpus,stream pyc
+    class packet,runner,handlers,patches,server nodec
+    class live_opus,bake1,bake2,bake3 opusc
+    class reducer,p5,chain,hud,bus browserc
+```
+
+The full system map — per-cycle sequence, three-pass bake pipeline, browser
+stage components, and project evolution timeline — lives in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## A note on naming
 
@@ -56,6 +184,20 @@ at runtime.
 | `corpus_song1/`, `corpus_song5/` | Per-cycle DSP JSON for the two current submission tracks |
 | `bake_song1/`, `bake_song5/` | Baked composition plans, cycle outputs, critique outputs, track metadata |
 | `docs/` | Handoffs, design plans, submission status, and final audit notes |
+| `assets/` | Visual assets — logo, cover, thumbnail, social, backgrounds (see [`assets/README.md`](assets/README.md)) |
+
+## Documentation map
+
+| Doc | Audience | Purpose |
+|---|---|---|
+| [`README.md`](README.md) — you are here | reproducer, contributor | Setup, commands, validation |
+| [`docs/INDEX.md`](docs/INDEX.md) | judge, reproducer | Curated entry into the full doc set |
+| [`docs/PROJECT_DESCRIPTION.md`](docs/PROJECT_DESCRIPTION.md) | judge | Public-safe one-pager |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | judge, contributor | System diagrams, dataflow, evolution timeline |
+| [`docs/SUBMISSION.md`](docs/SUBMISSION.md) | reproducer | Submission runbook with rubric alignment |
+| [`docs/ASSET_PROMPTS.md`](docs/ASSET_PROMPTS.md) | maintainer | ChatGPT prompts for cover, logo, thumbnail, social, backgrounds |
+| [`docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md`](docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md) | maintainer | Final audit, Code Review Graph findings, residual risks |
+| [`assets/README.md`](assets/README.md) | maintainer | Assets directory layout and naming conventions |
 
 ## Setup
 
