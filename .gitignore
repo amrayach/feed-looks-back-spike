@@ -6,6 +6,8 @@ __pycache__/
 .mypy_cache/
 
 corpus/
+corpus_sample*/
+corpus_bashar_record_*/
 audio/
 
 .DS_Store

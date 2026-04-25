@@ -375,7 +375,13 @@ def _select_tonal_gravity_clause(
       * lower_tonic after previous state upper_tonic:      RETURNING
       * lower_tonic after two prior lower_tonic states:    None (suppress)
       * lower_tonic otherwise:                             GROUNDED
-      * transitional:                                      AMBIGUOUS
+      * transitional:                                      None (suppress)
+
+    The transitional branch returns ``None`` so cycles with no Hijaz event
+    keep their prose generic. The contrast between cycles that lead with a
+    Hijaz clause and cycles that don't is itself meaningful — Bashar's
+    direction during calibration. ``AMBIGUOUS_CLAUSE`` is retained as a named
+    constant in case it is brought back during a future tuning pass.
 
     Exact returning/suppression decisions require more than the minimum
     2-cycle history used by ``detect_tonal_gravity`` alone, because we must
@@ -396,7 +402,7 @@ def _select_tonal_gravity_clause(
             return None  # suppress
         return GROUNDED_CLAUSE
 
-    return AMBIGUOUS_CLAUSE
+    return None  # transitional → suppressed (no Hijaz clause)
 
 
 def _select_aug2_clause(current: dict, history: List[dict]) -> Optional[str]:
@@ -415,23 +421,34 @@ def _approx_token_count(text: str) -> int:
 
 
 def _trim_to_budget(
-    base_prose: str,
+    silence_prefix: str,
+    base_without_silence: str,
     tonal_clause: Optional[str],
     aug2_clause: Optional[str],
     phrase_break_clause: Optional[str],
     max_tokens: int = MAX_PROSE_TOKENS,
 ) -> str:
     """
-    Assemble base prose + clauses respecting the token budget.
+    Assemble silence_prefix + hijaz_prefix + base_without_silence respecting
+    the token budget.
+
+    Hijaz clauses (tonal + aug2 + phrase_break) LEAD the base prose so Opus
+    sees the musical event before the generic descriptor. The silence prefix
+    (when present) precedes the Hijaz prefix:
+
+        {silence_prefix}{hijaz_prefix}{base_without_silence}
 
     Drop priority (lowest first): grounded → phrase-break → tahwil → aug2.
+    The silence prefix and the deterministic core (base_without_silence)
+    are never trimmed.
+
     The ``GROUNDED_CLAUSE`` is treated as the lowest-value tonal-gravity
-    clause; other tonal-gravity clauses (tahwil, returning, sustained,
-    ambiguous) are bundled under "tahwil" for trimming.
+    clause; other tonal-gravity clauses (tahwil, returning, sustained) are
+    bundled under "tahwil" for trimming.
     """
     is_grounded = tonal_clause == GROUNDED_CLAUSE
 
-    # Build (tag, clause) tuples in HIGH-to-LOW priority order.
+    # Build (tag, clause) tuples in HIGH-to-LOW priority order for trim.
     ordered: List[Tuple[str, str]] = []
     if aug2_clause:
         ordered.append(("aug2", aug2_clause))
@@ -442,18 +459,20 @@ def _trim_to_budget(
     if is_grounded and tonal_clause is not None:
         ordered.append(("grounded", tonal_clause))
 
-    # The OUTPUT order must match spec: tonal_gravity → aug2 → phrase_break.
-    # ``ordered`` is only the trim priority. Render uses spec order.
+    # OUTPUT order inside hijaz_prefix: tonal_gravity → aug2 → phrase_break.
+    # The whole hijaz_prefix LEADS the base prose (post-silence).
     def render(active: set) -> str:
-        parts = [base_prose]
+        hijaz_parts: List[str] = []
         if tonal_clause and (("tahwil" in active and not is_grounded)
                              or ("grounded" in active and is_grounded)):
-            parts.append(tonal_clause)
+            hijaz_parts.append(tonal_clause)
         if aug2_clause and "aug2" in active:
-            parts.append(aug2_clause)
+            hijaz_parts.append(aug2_clause)
         if phrase_break_clause and "phrase_break" in active:
-            parts.append(phrase_break_clause)
-        return " ".join(parts)
+            hijaz_parts.append(phrase_break_clause)
+
+        hijaz_prefix = (" ".join(hijaz_parts) + " ") if hijaz_parts else ""
+        return f"{silence_prefix}{hijaz_prefix}{base_without_silence}"
 
     active = {tag for tag, _ in ordered}
     text = render(active)
@@ -492,27 +511,38 @@ def generate_prose(
     file-level percentile stats, and onset-density percentile dict.
 
     Template (single line):
-        {silence_prefix}{intensity}, {trend}. {timbre} timbre.
+        {silence_prefix}{hijaz_prefix}{intensity}, {trend}. {timbre} timbre.
         {articulation_clause}. {tonal_center_phrase} {position_phrase}
-        [{tonal_gravity_clause}] [{aug2_clause}] [{phrase_break_clause}]
 
-    The first two lines are the deterministic core (Phase 2 contract).
-    The bracketed third line is the Phase 3 Hijaz enrichment — clauses are
+    where ``{hijaz_prefix}`` is one or more of
+    ``[{tonal_gravity_clause}] [{aug2_clause}] [{phrase_break_clause}]`` —
     appended only when the corresponding pattern is detected from the
-        rolling ``history_context``. With ``history_context=None`` (or
-        empty) only the AMBIGUOUS clause may fire, which preserves backward
-        compatibility for cycles 0/1 and for callers that don't yet thread
-        history through.
+    rolling ``history_context``. If no Hijaz event fires (transitional
+    state with no aug2 or phrase break) the prefix is empty and the prose
+    is fully generic — the contrast between Hijaz-leading cycles and
+    generic cycles is itself information for downstream readers.
+
+    The deterministic core (intensity / timbre / articulation /
+    tonal-center / position) is the Phase 2 contract. The Phase 3 Hijaz
+    enrichment now LEADS the prose (rather than trailing as in earlier
+    revisions) so Opus reads the musical event before the generic
+    descriptor.
 
     Labels are stored lowercase in the constants tuples (because ``trend``
     appears mid-sentence after a comma where lowercase is correct). At the
-    three sentence-leading positions — ``intensity`` (after any silence
-    prefix), ``timbre``, and ``articulation_clause`` — we capitalize the
-    first character at use site so the prose is grammatical English.
+    three sentence-leading positions — ``intensity`` (post-prefix),
+    ``timbre``, and ``articulation_clause`` — we capitalize the first
+    character at use site so the prose is grammatical English.
+
+    With ``history_context=None`` (or empty) no Hijaz clauses fire — the
+    transitional branch is suppressed (AMBIGUOUS is no longer emitted),
+    so cycles 0/1 and callers that don't thread history through receive
+    fully generic prose.
 
     If the assembled prose exceeds ``MAX_PROSE_TOKENS`` the enrichment
     clauses are dropped in priority order (grounded < phrase_break <
-    tahwil < aug2). The deterministic core is never trimmed.
+    tahwil < aug2). The silence prefix and deterministic core are never
+    trimmed.
     """
     intensity = categorize_intensity(block_1["rms_mean"], file_stats)
     trend = block_1["rms_trend"]   # already a label, computed upstream
@@ -528,8 +558,8 @@ def generate_prose(
     )
     position = categorize_position(block_1["elapsed_total_s"])
 
-    base_prose = (
-        f"{silence_prefix}{_capitalize_lead(intensity)}, {trend}. "
+    base_without_silence = (
+        f"{_capitalize_lead(intensity)}, {trend}. "
         f"{_capitalize_lead(timbre)} timbre. "
         f"{_capitalize_lead(articulation_clause)}. "
         f"{tcp} {position}"
@@ -543,7 +573,8 @@ def generate_prose(
     )
 
     return _trim_to_budget(
-        base_prose, tonal_clause, aug2_clause, phrase_break_clause,
+        silence_prefix, base_without_silence,
+        tonal_clause, aug2_clause, phrase_break_clause,
     )
 
 
@@ -808,11 +839,13 @@ if __name__ == "__main__":
             "pitch_class_secondary": sec,
         }
 
-    # Cycle 0 (empty history) → transitional → "Tonal gravity ambiguous."
+    # Cycle 0 (empty history) → transitional → AMBIGUOUS suppressed; generic prose only
     p = generate_prose(_full_block("D"), fake_stats, fake_density, history_context=[])
-    assert p.endswith("Tonal gravity ambiguous."), \
-        f"empty history must end with ambiguous tag, got: {p!r}"
-    print(f"    OK   cycle 0 → ends with ambiguous")
+    assert "Tonal gravity ambiguous." not in p, \
+        f"empty history must NOT include ambiguous tag (suppressed), got: {p!r}"
+    assert p.startswith("Moderate intensity, building."), \
+        f"empty history must lead with generic prose (no Hijaz prefix), got: {p!r}"
+    print(f"    OK   cycle 0 → generic prose, no ambiguous")
 
     # (A, D, G, G, G) → current upper_tonic, previous state upper_tonic → sustained
     history = [_full_block("A"), _full_block("D"), _full_block("G"), _full_block("G")]
@@ -888,10 +921,51 @@ if __name__ == "__main__":
         f"aug2 clause must precede phrase break, got: {p!r}"
     print(f"    OK   multi-clause order preserved (aug2 < phrase_break)")
 
-    # Backward compatibility: omitting history_context still works
+    # Backward compatibility: omitting history_context still works (no Hijaz prefix)
     p = generate_prose(_full_block("D"), fake_stats, fake_density)
-    assert "Tonal gravity ambiguous." in p, \
-        f"omitted history_context must default to empty (transitional), got: {p!r}"
-    print(f"    OK   omitted history_context defaults to empty")
+    assert "Tonal gravity ambiguous." not in p, \
+        f"omitted history_context must NOT include ambiguous tag (suppressed), got: {p!r}"
+    assert p.startswith("Moderate intensity, building."), \
+        f"omitted history_context must lead with generic prose, got: {p!r}"
+    print(f"    OK   omitted history_context defaults to empty (no ambiguous)")
+
+    # ── Front-load ordering tests (rev. 4: Hijaz clauses LEAD the prose) ──
+    print("  Hijaz prefix ordering (front-loaded):")
+
+    # Test F1: no history / no event → no Hijaz prefix at all, no AMBIGUOUS
+    p = generate_prose(_full_block("A"), fake_stats, fake_density, history_context=[])
+    assert "Tahwil" not in p and "Augmented-second" not in p \
+        and "Phrase break." not in p and "Tonal gravity ambiguous." not in p, \
+        f"no-event cycle must have NO Hijaz prefix, got: {p!r}"
+    print(f"    OK   no event → no Hijaz prefix")
+
+    # Test F2: phrase break only → "Phrase break. " leads the post-silence portion
+    history = [_full_block("A", sil=0.05)]
+    p = generate_prose(_full_block("A", sil=0.4), fake_stats, fake_density, history_context=history)
+    assert p.startswith("Phrase break. "), \
+        f"phrase break only must LEAD the prose, got: {p!r}"
+    print(f"    OK   phrase break only → leads prose")
+
+    # Test F3: tahwil + aug2 (within-window) → tahwil before aug2, both before generic prose
+    # history=[G, G], current=F# with sec=D# → upper_tonic (window has 2 G's), prev transitional
+    # → first-time tahwil; aug2 within_window also fires (dom=F# upper, sec=D# lower)
+    history = [_full_block("G"), _full_block("G")]
+    p = generate_prose(_full_block("F#", "D#"), fake_stats, fake_density, history_context=history)
+    tahwil_pos = p.find("Tahwil:")
+    aug2_pos = p.find("Augmented-second")
+    moderate_pos = p.find("Moderate intensity")
+    assert tahwil_pos == 0, f"tahwil must LEAD the prose, got pos {tahwil_pos}: {p!r}"
+    assert tahwil_pos < aug2_pos < moderate_pos, \
+        f"order must be tahwil < aug2 < generic, got positions " \
+        f"{tahwil_pos}/{aug2_pos}/{moderate_pos}: {p!r}"
+    print(f"    OK   tahwil + aug2 → tahwil leads, aug2 follows, both before generic")
+
+    # Test F4: silence + tahwil → "Much silence. Tahwil: ..."
+    # history=[D, G], current=G with sil=0.6 → upper_tonic, prev transitional → first-time tahwil
+    history = [_full_block("D"), _full_block("G")]
+    p = generate_prose(_full_block("G", sil=0.6), fake_stats, fake_density, history_context=history)
+    assert p.startswith("Much silence. Tahwil:"), \
+        f"silence + tahwil must read 'Much silence. Tahwil:...', got: {p!r}"
+    print(f"    OK   silence + tahwil → 'Much silence. Tahwil:...'")
 
     print("  summarizer.py: ALL OK")

@@ -47,6 +47,15 @@ export const SVG_MARKUP_MAX_SUMMARY_CHARS = 100;
 export const CYCLE_HISTORY_MAX = 8;
 export const ACTIVITY_HISTORY_MAX = 64;
 
+// RECENT DECISIONS — separate rolling buffer holding per-tool-call authorial
+// summaries (NOT counts). Surfaced to Opus so motifs can recur — Opus may
+// return to a placement by referencing its element_id in a later cycle.
+// Hard cap is intentionally small; the renderer shows only the last N cycle
+// indices (default 3, earlier first).
+export const DECISION_HISTORY_MAX = 16;
+export const RECENT_DECISIONS_DEFAULT_CYCLES = 3;
+export const DECISION_SUMMARY_MAX_CHARS = 64;
+
 // Crowding thresholds for SCENE OVERVIEW Line 2: a region is flagged as
 // crowded when it holds at least this many non-faded elements AND that count
 // is at least this share of the total non-faded elements.
@@ -87,6 +96,7 @@ export function createInitialState() {
     current_elapsed_s: null,
     cycle_history: [],
     activity_history: [],
+    decision_history: [],
     // Phase 6: p5 sketch slots. Background is a scalar (one at a time).
     // Localized is a list capped at 3 — eviction-on-overflow, never rejection
     // (spec §7.3 + §14 Phase 6 locked decision).
@@ -128,6 +138,179 @@ function recordActivity(state, kind, count = 1) {
     count,
   });
   while (history.length > ACTIVITY_HISTORY_MAX) history.shift();
+}
+
+function _truncateForSummary(text, max = DECISION_SUMMARY_MAX_CHARS) {
+  if (typeof text !== "string") return "";
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, Math.max(1, max - 1))}…`;
+}
+
+function _summarizeReactivityMotion(input) {
+  if (!input || typeof input !== "object") return "-";
+  const reactivityRaw = input.reactivity;
+  const reactivity = Array.isArray(reactivityRaw)
+    ? reactivityRaw
+    : reactivityRaw
+      ? [reactivityRaw]
+      : [];
+  if (reactivity.length > 0) {
+    const first = reactivity[0];
+    if (first && typeof first === "object" && first.property && first.feature) {
+      return `${first.property}<-${first.feature}`;
+    }
+  }
+  if (input.motion && typeof input.motion === "object" && typeof input.motion.preset === "string") {
+    return `motion:${input.motion.preset}`;
+  }
+  return "-";
+}
+
+function _summaryForToolCall(toolName, input) {
+  const safeInput = input && typeof input === "object" ? input : {};
+  switch (toolName) {
+    case "addText":
+      return _truncateForSummary(safeInput.content);
+    case "addSVG":
+      return _truncateForSummary(safeInput.semantic_label);
+    case "addImage":
+      return _truncateForSummary(safeInput.query);
+    case "setBackground":
+      return _truncateForSummary(safeInput.css_background, 40);
+    case "addCompositeScene": {
+      const count = Array.isArray(safeInput.elements) ? safeInput.elements.length : 0;
+      const label = _truncateForSummary(
+        safeInput.group_label,
+        Math.max(8, DECISION_SUMMARY_MAX_CHARS - 14),
+      );
+      return `${label} (${count} members)`;
+    }
+    case "setP5Background":
+      return `p5 background${safeInput.audio_reactive ? " (reactive)" : " (static)"}`;
+    case "addP5Sketch":
+      return `p5 sketch @ ${safeInput.position ?? "?"}${safeInput.audio_reactive ? " (reactive)" : " (static)"}`;
+    case "transformElement": {
+      const t = safeInput.transform;
+      if (!t || typeof t !== "object") return "transform";
+      const parts = [];
+      if (typeof t.scale === "number") parts.push(`scale ${t.scale}`);
+      if (typeof t.rotate === "number") parts.push(`rotate ${t.rotate}`);
+      if (t.translate && typeof t.translate === "object") {
+        const x = typeof t.translate.x === "number" ? t.translate.x : 0;
+        const y = typeof t.translate.y === "number" ? t.translate.y : 0;
+        parts.push(`translate ${x},${y}`);
+      }
+      return parts.length > 0 ? `transform ${parts.join(" ")}` : "transform";
+    }
+    case "morphElement": {
+      const to = safeInput.to;
+      const kind = to && typeof to === "object" && typeof to.type === "string" ? to.type : "morph";
+      return `morph -> ${kind}`;
+    }
+    case "pulseScene":
+      return `pulse intensity ${typeof safeInput.intensity === "number" ? safeInput.intensity.toFixed(2) : "?"}`;
+    case "paletteShift":
+      return "palette shift";
+    case "textAnimate":
+      return `textAnimate: ${typeof safeInput.effect === "string" ? safeInput.effect : "?"}`;
+    case "fadeElement":
+      return `fade ${typeof safeInput.element_id === "string" ? safeInput.element_id : ""}`.trim();
+    default:
+      return typeof toolName === "string" ? toolName : "?";
+  }
+}
+
+function _elementIdForResult(toolName, input, result) {
+  if (result && typeof result === "object") {
+    if (typeof result.element_id === "string") return result.element_id;
+    if (typeof result.composition_group_id === "string") return result.composition_group_id;
+    if (typeof result.sketch_id === "string") return result.sketch_id;
+  }
+  if (toolName === "fadeElement" && input && typeof input.element_id === "string") {
+    return input.element_id;
+  }
+  return null;
+}
+
+function _memberElementIdsForResult(toolName, result) {
+  if (toolName !== "addCompositeScene") return [];
+  if (!result || typeof result !== "object" || !Array.isArray(result.element_ids)) return [];
+  return result.element_ids.filter((id) => typeof id === "string" && id.length > 0).slice(0, 5);
+}
+
+// Append a single decision entry. NEVER stores raw SVG markup, p5 code, full
+// tool_input, or full patches — only short authorial summaries. Skips on
+// errored tool results so failed calls don't pollute the buffer.
+export function recordDecision(state, { toolUseBlock, result } = {}) {
+  if (!state || typeof state !== "object") return;
+  if (!toolUseBlock || typeof toolUseBlock !== "object") return;
+  if (!result || typeof result !== "object") return;
+  if (result.error) return;
+  if (!Array.isArray(state.decision_history)) state.decision_history = [];
+  const toolName = toolUseBlock.name;
+  const input = toolUseBlock.input ?? {};
+  const entry = {
+    cycle_index: state.current_cycle_index,
+    tool: toolName,
+    element_id: _elementIdForResult(toolName, input, result),
+    summary: _summaryForToolCall(toolName, input),
+    reactivity_motion: _summarizeReactivityMotion(input),
+  };
+  const memberElementIds = _memberElementIdsForResult(toolName, result);
+  if (memberElementIds.length > 0) {
+    entry.member_element_ids = memberElementIds;
+  }
+  state.decision_history.push(entry);
+  while (state.decision_history.length > DECISION_HISTORY_MAX) state.decision_history.shift();
+}
+
+// Render the most recent N distinct prior cycles' decisions, earlier first.
+// Returns null when there is nothing to show — packet_builder uses null to
+// elide the block entirely (no header on a cold start).
+export function formatRecentDecisions(decisionHistory, currentCycleIndex, options = {}) {
+  const lastNCycles =
+    Number.isInteger(options.lastNCycles) && options.lastNCycles > 0
+      ? options.lastNCycles
+      : RECENT_DECISIONS_DEFAULT_CYCLES;
+  if (!Array.isArray(decisionHistory) || decisionHistory.length === 0) return null;
+  const seen = new Set();
+  const cycles = [];
+  for (let i = decisionHistory.length - 1; i >= 0; i -= 1) {
+    const ci = decisionHistory[i].cycle_index;
+    if (ci === null || ci === undefined) continue;
+    if (Number.isInteger(currentCycleIndex) && ci === currentCycleIndex) continue;
+    if (seen.has(ci)) continue;
+    seen.add(ci);
+    cycles.push(ci);
+    if (cycles.length >= lastNCycles) break;
+  }
+  if (cycles.length === 0) return null;
+  cycles.sort((a, b) => a - b);
+  const noun = cycles.length === 1 ? "cycle" : "cycles";
+  const lines = [`RECENT DECISIONS (prior ${cycles.length} ${noun}; earlier first):`];
+  for (const ci of cycles) {
+    for (const entry of decisionHistory) {
+      if (entry.cycle_index !== ci) continue;
+      const isGroupId =
+        typeof entry.element_id === "string" && /^group_\d{4}$/.test(entry.element_id);
+      const members =
+        isGroupId && Array.isArray(entry.member_element_ids) && entry.member_element_ids.length > 0
+          ? `; members ${entry.member_element_ids.join(", ")}`
+          : "";
+      const idPart = entry.element_id
+        ? isGroupId
+          ? ` (group ${entry.element_id}${members})`
+          : ` (${entry.element_id})`
+        : "";
+      const reactPart =
+        entry.reactivity_motion && entry.reactivity_motion !== "-"
+          ? ` ${entry.reactivity_motion}`
+          : "";
+      lines.push(`  cycle ${ci}: ${entry.tool} "${entry.summary}"${idPart}${reactPart}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function mintElementId(state) {
@@ -2074,6 +2257,131 @@ if (isDirectNodeExecution) {
     });
     const summary = formatSummary(s);
     assert.match(summary, /reactive: opacity←amplitude, scale←onset_strength/);
+  });
+
+  // ─── RECENT DECISIONS (Part 5) ─────────────────────────────────────
+  t("recordDecision skips errored results and unknown shapes (no buffer pollution)", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 7, elapsedTotalS: 30 });
+    recordDecision(s, { toolUseBlock: { name: "addText", input: { content: "x" } }, result: { error: "boom" } });
+    recordDecision(s, { toolUseBlock: null, result: { element_id: "elem_0001" } });
+    recordDecision(s, { toolUseBlock: { name: "addText", input: {} }, result: null });
+    assert.equal(s.decision_history.length, 0);
+  });
+
+  t("recordDecision pulls semantic_label for addSVG and content for addText (truncated)", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 21, elapsedTotalS: 80 });
+    recordDecision(s, {
+      toolUseBlock: { name: "addSVG", input: { semantic_label: "arched threshold", reactivity: [{ property: "scale", feature: "hijaz_intensity", map: { in: [0,1], out: [0.97, 1.06], curve: "linear" } }] } },
+      result: { element_id: "elem_0021" },
+    });
+    recordDecision(s, {
+      toolUseBlock: { name: "addText", input: { content: "someone was here", motion: { preset: "breathe" } } },
+      result: { element_id: "elem_0022" },
+    });
+    assert.equal(s.decision_history.length, 2);
+    assert.equal(s.decision_history[0].summary, "arched threshold");
+    assert.equal(s.decision_history[0].element_id, "elem_0021");
+    assert.equal(s.decision_history[0].reactivity_motion, "scale<-hijaz_intensity");
+    assert.equal(s.decision_history[1].summary, "someone was here");
+    assert.equal(s.decision_history[1].reactivity_motion, "motion:breathe");
+  });
+
+  t("recordDecision summarizes addCompositeScene and uses composition_group_id", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 25, elapsedTotalS: 100 });
+    recordDecision(s, {
+      toolUseBlock: { name: "addCompositeScene", input: { group_label: "altar of light", elements: [{}, {}, {}] } },
+      result: { composition_group_id: "group_0003", element_ids: ["elem_0030","elem_0031","elem_0032"] },
+    });
+    assert.equal(s.decision_history[0].element_id, "group_0003");
+    assert.deepEqual(s.decision_history[0].member_element_ids, ["elem_0030", "elem_0031", "elem_0032"]);
+    assert.match(s.decision_history[0].summary, /altar of light \(3 members\)/);
+  });
+
+  t("recordDecision uses sketch_id for p5 tools and never stores code", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 30, elapsedTotalS: 120 });
+    recordDecision(s, {
+      toolUseBlock: { name: "addP5Sketch", input: { position: "center", size: "small", code: "function setup(){}", audio_reactive: true } },
+      result: { sketch_id: "sketch_0007" },
+    });
+    assert.equal(s.decision_history[0].element_id, "sketch_0007");
+    assert.equal(s.decision_history[0].summary, "p5 sketch @ center (reactive)");
+    assert.equal(s.decision_history[0].summary.includes("function setup"), false);
+  });
+
+  t("recordDecision rotates at DECISION_HISTORY_MAX, oldest first dropped", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 0 });
+    for (let i = 0; i < DECISION_HISTORY_MAX + 5; i += 1) {
+      recordDecision(s, {
+        toolUseBlock: { name: "addText", input: { content: `t${i}` } },
+        result: { element_id: `elem_${i}` },
+      });
+    }
+    assert.equal(s.decision_history.length, DECISION_HISTORY_MAX);
+    assert.equal(s.decision_history[0].summary, "t5");
+    assert.equal(s.decision_history.at(-1).summary, `t${DECISION_HISTORY_MAX + 4}`);
+  });
+
+  t("formatRecentDecisions returns null on empty history", () => {
+    assert.equal(formatRecentDecisions([], 5), null);
+    assert.equal(formatRecentDecisions(undefined, 5), null);
+  });
+
+  t("formatRecentDecisions shows last 3 distinct prior cycles, earlier first, excluding current", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 21, elapsedTotalS: 80 });
+    recordDecision(s, { toolUseBlock: { name: "addSVG", input: { semantic_label: "arched threshold", reactivity: [{ property: "scale", feature: "hijaz_intensity", map: { in: [0,1], out: [0.97,1.06], curve: "linear" } }] } }, result: { element_id: "elem_0021" } });
+    beginCycle(s, { cycleIndex: 22, elapsedTotalS: 84 });
+    recordDecision(s, { toolUseBlock: { name: "addImage", input: { query: "threshold light, warm low", motion: { preset: "breathe" } } }, result: { element_id: "elem_0022" } });
+    beginCycle(s, { cycleIndex: 23, elapsedTotalS: 88 });
+    recordDecision(s, { toolUseBlock: { name: "addText", input: { content: "someone was here", reactivity: [{ property: "opacity", feature: "amplitude", map: { in: [0,1], out: [0.4,1], curve: "linear" } }] } }, result: { element_id: "elem_0023" } });
+    beginCycle(s, { cycleIndex: 24, elapsedTotalS: 92 });
+    const rendered = formatRecentDecisions(s.decision_history, 24);
+    assert.match(rendered, /^RECENT DECISIONS \(prior 3 cycles; earlier first\):/);
+    const lines = rendered.split("\n");
+    assert.equal(lines.length, 4);
+    assert.match(lines[1], /^  cycle 21: addSVG "arched threshold" \(elem_0021\) scale<-hijaz_intensity$/);
+    assert.match(lines[2], /^  cycle 22: addImage "threshold light, warm low" \(elem_0022\) motion:breathe$/);
+    assert.match(lines[3], /^  cycle 23: addText "someone was here" \(elem_0023\) opacity<-amplitude$/);
+  });
+
+  t("formatRecentDecisions excludes currentCycleIndex even if entries leaked in", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 5, elapsedTotalS: 20 });
+    recordDecision(s, { toolUseBlock: { name: "addText", input: { content: "older" } }, result: { element_id: "elem_0001" } });
+    beginCycle(s, { cycleIndex: 6, elapsedTotalS: 24 });
+    recordDecision(s, { toolUseBlock: { name: "addText", input: { content: "current" } }, result: { element_id: "elem_0002" } });
+    const rendered = formatRecentDecisions(s.decision_history, 6);
+    assert.equal(rendered.includes("current"), false);
+    assert.equal(rendered.includes("older"), true);
+  });
+
+  t("formatRecentDecisions labels composite group ids and exposes member element ids", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 8, elapsedTotalS: 32 });
+    recordDecision(s, {
+      toolUseBlock: { name: "addCompositeScene", input: { group_label: "threshold arrival", elements: [{}, {}] } },
+      result: { composition_group_id: "group_0002", element_ids: ["elem_0010", "elem_0011"] },
+    });
+    beginCycle(s, { cycleIndex: 9, elapsedTotalS: 36 });
+    const rendered = formatRecentDecisions(s.decision_history, 9);
+    assert.match(
+      rendered,
+      /cycle 8: addCompositeScene "threshold arrival \(2 members\)" \(group group_0002; members elem_0010, elem_0011\)/,
+    );
+  });
+
+  t("recordDecision does not disturb activity_history (overview tests untouched)", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 1, elapsedTotalS: 4 });
+    const beforeActivity = JSON.stringify(s.activity_history);
+    recordDecision(s, { toolUseBlock: { name: "addText", input: { content: "x" } }, result: { element_id: "elem_0001" } });
+    assert.equal(JSON.stringify(s.activity_history), beforeActivity);
+    assert.equal(s.decision_history.length, 1);
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);

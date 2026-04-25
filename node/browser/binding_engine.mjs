@@ -27,11 +27,11 @@ const {
 // stomping the other.
 
 export const MOTION_KERNEL_DEFAULTS = Object.freeze({
-  breathe: { feature: "hijaz_intensity", frequencyHz: 0.2, magnitude: 0.04 },
-  pulse:   { feature: "onset_strength",  decayMs: 300,     magnitude: 0.1  },
-  orbit:   { feature: "amplitude",       frequencyHz: 0.1, magnitude: 8    },
-  drift:   { feature: "hijaz_intensity", frequencyHz: 0.06, magnitude: 10  },
-  tremble: { feature: "onset_strength",  magnitude: 2                      },
+  breathe: { feature: "hijaz_intensity", frequencyHz: 0.2, magnitude: 0.09 },
+  pulse:   { feature: "onset_strength",  decayMs: 300,     magnitude: 0.17 },
+  orbit:   { feature: "amplitude",       frequencyHz: 0.1, magnitude: 22   },
+  drift:   { feature: "hijaz_intensity", frequencyHz: 0.06, magnitude: 24  },
+  tremble: { feature: "onset_strength",  magnitude: 4                      },
 });
 
 // Numeric encoding for hijaz_state enum (authors gate via map.in=[N,N]).
@@ -710,23 +710,24 @@ if (isDirectNodeExecution) {
     const atPeak = kernel.update(0, 1);
     const after150 = kernel.update(150, 1);
     const after600 = kernel.update(600, 1);
-    // At peak: decay=1 → scaleFactor = 1 + magnitude = 1.1
-    assert.ok(Math.abs(atPeak.scaleFactor - 1.1) < 0.001);
-    // 150 ms in: decay ≈ exp(-0.5) ≈ 0.607 → scaleFactor ≈ 1.06
+    // At peak: decay=1 → scaleFactor = 1 + magnitude (current default 0.17)
+    const expectedPeak = 1 + MOTION_KERNEL_DEFAULTS.pulse.magnitude;
+    assert.ok(Math.abs(atPeak.scaleFactor - expectedPeak) < 0.001);
+    // 150 ms in: decay ≈ exp(-0.5) ≈ 0.607
     assert.ok(after150.scaleFactor < atPeak.scaleFactor);
     assert.ok(after150.scaleFactor > 1);
-    // 600 ms in: decay ≈ exp(-2) ≈ 0.135 → scaleFactor ≈ 1.013
+    // 600 ms in: decay ≈ exp(-2) ≈ 0.135
     assert.ok(after600.scaleFactor < after150.scaleFactor);
     assert.ok(after600.scaleFactor > 1);
   });
 
   t("createMotionKernel orbit returns translateX + translateY on the unit circle scaled by feature", () => {
     const kernel = createMotionKernel("orbit", { intensity: 1, t0: 0 });
-    // feature = 1 → radius = magnitude * 1 = 8. Sample at t=0.
+    // feature = 1 → radius = magnitude * 1. Sample at t=0; x² + y² ≈ magnitude².
     const c = kernel.update(0, 1);
-    // At t=0: cos(phase)=cos(phaseOffset), but radius = 8, so x² + y² ≈ 64.
     const r2 = c.translateXDelta * c.translateXDelta + c.translateYDelta * c.translateYDelta;
-    assert.ok(Math.abs(r2 - 64) < 0.01, `orbit radius²=${r2}, expected ≈64`);
+    const expectedR2 = MOTION_KERNEL_DEFAULTS.orbit.magnitude * MOTION_KERNEL_DEFAULTS.orbit.magnitude;
+    assert.ok(Math.abs(r2 - expectedR2) < 0.01, `orbit radius²=${r2}, expected ≈${expectedR2}`);
     // Zero feature collapses radius to zero.
     const c0 = kernel.update(0, 0);
     assert.equal(c0.translateXDelta, 0);
@@ -744,9 +745,10 @@ if (isDirectNodeExecution) {
     );
     assert.ok(anyNonzero, "drift kernel should produce motion even with feature=0");
     // All samples are bounded by magnitude.
+    const driftBound = MOTION_KERNEL_DEFAULTS.drift.magnitude + 0.01;
     for (const c of samples) {
-      assert.ok(Math.abs(c.translateXDelta) <= 10.01);
-      assert.ok(Math.abs(c.translateYDelta) <= 10.01);
+      assert.ok(Math.abs(c.translateXDelta) <= driftBound);
+      assert.ok(Math.abs(c.translateYDelta) <= driftBound);
     }
   });
 
@@ -803,15 +805,18 @@ if (isDirectNodeExecution) {
     );
     clock = 0;
     bus.dispatch("amplitude", 1);      // reactivity → scale = 1.2
-    bus.dispatch("onset_strength", 1); // pulse kernel fires, scaleFactor ~1.1 at peak
+    bus.dispatch("onset_strength", 1); // pulse kernel fires; peak scaleFactor ≈ 1+pulse.magnitude
     clock = 20;
     raf.tick(clock);
     const scaleMatch = /scale\(([^)]+)\)/.exec(node.style.transform);
     assert.ok(scaleMatch, "merged transform should carry scale");
-    // Expected composition: 1.2 * ~1.1 ≈ 1.32 (allow some slack for decay since dt=20 ms)
     const scale = parseFloat(scaleMatch[1]);
     assert.ok(scale > 1.2, `composed scale ${scale} should exceed reactivity-only 1.2`);
-    assert.ok(scale < 1.4, `composed scale ${scale} should not exceed reactivity*magnitude upper bound`);
+    // Upper bound: 1.2 * (1 + pulse.magnitude) plus a small slack for the
+    // 20 ms decay window. Bound widens automatically when the kernel default
+    // is bumped, so this stays correct across magnitude changes.
+    const composedUpper = 1.2 * (1 + MOTION_KERNEL_DEFAULTS.pulse.magnitude) + 0.05;
+    assert.ok(scale < composedUpper, `composed scale ${scale} should not exceed reactivity*magnitude upper bound ${composedUpper.toFixed(3)}`);
   });
 
   t("unmount drops the motion kernel's feature subscription", () => {

@@ -162,13 +162,24 @@ A compact numerical reading of the last 4 seconds:
   window_duration_s     // always 4.0
   elapsed_total_s       // seconds since performance began
 
-Note: this spike does not include tahwil_state or aug2_detected as explicit signals. You infer these from the pitch class trajectory across cycles, the prose caption in Block 2, and the melodic patterns implied by the data. The Hijaz knowledge above tells you what to look for; the data tells you what is happening.
+Note: tahwil, aug2, phrase break, returning-to-tonic, and grounded-in-lower-jins are detected deterministically from the rolling pitch-class history and named in Block 2's leading clauses when they fire. The pitch-class trajectory in Block 1 is the raw signal; Block 2 names the structural event when one is present. Cycles with no detected event keep their prose generic — the absence of a leading Hijaz clause is itself information.
 
-BLOCK 2 — DETERMINISTIC PROSE CAPTION
-A short musicological caption generated locally, for example:
-"Moderate intensity, building. Bright timbre. Moderate articulation. Tonal center D with secondary emphasis on F#. Developing."
+BLOCK 2 — DETERMINISTIC PROSE CAPTION (Hijaz-leading when an event is detected)
+A short musicological caption generated locally. When a structural Hijaz event is detected, the caption LEADS with one or more deterministic event labels:
+  "Tahwil: tonal gravity has shifted to the ghammaz."
+  "Sustained on ghammaz; upper jins active."
+  "Returning motion toward the tonic."
+  "Grounded in lower jins."
+  "Augmented-second interval crossed between phrases."
+  "Augmented-second interval present in this phrase."
+  "Phrase break."
+followed by the generic core, for example:
+  "Tahwil: tonal gravity has shifted to the ghammaz. Moderate intensity, building. Bright timbre. Moderate articulation. Tonal center G with secondary emphasis on D. Developing."
 
-Read this as a compressed interpretation of the music — a second opinion alongside the scalars. It uses generic musical language, not Hijaz-specific terms. The Hijaz interpretation is your work, not the caption's.
+When no Hijaz event is detected, only the generic core appears:
+  "Moderate intensity, building. Bright timbre. Moderate articulation. Tonal center D with secondary emphasis on F#. Developing."
+
+Read this as a compressed interpretation of the music — a second opinion alongside the scalars. The presence or absence of a leading Hijaz clause is itself information: treat a cycle without one as a neutral frame, and respond to a leading clause as a structural cue (per the OVERRIDE rule below).
 
 BLOCK 3 — SPARKLINES
 Three tiny ASCII traces showing the recent contour of RMS, onset strength, and centroid across the 4-second window.
@@ -605,7 +616,22 @@ A background image that shifts hue slowly across the energy envelope. The 2000 m
 
 ### Discipline
 
-**Not every element needs to react.** Reactivity is a compositional choice, not decoration. A sustained text testimony that holds still while everything else pulses is as powerful as a text that pulses with every onset. Favor a handful of load-bearing reactive elements over a scene where everything moves — if every element is reactive, nothing reads as reactive.
+**Default to one live-bound element per placement decision unless stillness is compositionally stronger.** A live binding is either an explicit `reactivity` array OR a motion preset whose feature is chosen with musical intent. The "default to one" framing is the working stance — most placements should carry a live coupling so the room stays audibly tied to what Bashar is playing — but a sustained text testimony that holds still while everything else moves is as powerful as a text that pulses with every onset. Choose stillness when it is the stronger compositional answer; default to coupling when in doubt.
+
+**Composite rule:** every `addCompositeScene` MUST include at least one member with `reactivity` or `motion`. A composite scene that places three or more visual elements without a single live coupling reads as a frozen tableau — not the language of this piece. One live member is enough; not all of them.
+
+**Silence is still right.** When the music asks for nothing, call no tools — leave the scene as it is. The "default to one live-bound element per placement" stance applies *to placements you make*; it does not push you toward making a placement when none is called for.
+
+**Default pairings (start here; override with musical reason).** When you reach for a placement and have no specific binding in mind, these are safe starting points:
+
+- **text → `opacity ← amplitude`** with `curve: "ease-out"`, `smoothing_ms` 80–150. Never bind a property that hurts readability — no blur on text, no saturation flips, no rapid color hue cycling. Text is for being read.
+- **SVG → `scale ← hijaz_intensity`** with `out: [0.97, 1.06]` (gentle), or `rotation ← spectral_centroid` with `out: [-2, 2]` (tiny tilt). The SVG figure should feel like it lives in the room's energy envelope, not perform for it.
+- **image → `opacity ← amplitude`** for breathing presence, OR `saturation ← hijaz_intensity` for warming/cooling across a phrase, OR `color_hue ← spectral_centroid` with a small window (`out: [-8, 8]`) for slow timbral drift. Pick one — overlapping bindings on a single image read as instability.
+- **background → re-`setBackground` on tahwil or aug2 transitions.** Let the wash itself narrate the maqam event. The background does not take a `reactivity` array; its "binding" is the cadence of when you change it.
+
+**Motion presets are a fallback.** Prefer an explicit `reactivity` entry when you have a specific musical intent (e.g. "this lamp surges on every tahwil"). Reach for `motion: { preset }` when the binding you'd want to author by hand would be tedious — a continuous breathe, a continuous orbit, a continuous tremble — and you want the kernel to do the curve work.
+
+**Returning to a motif.** If the RECENT DECISIONS block names an `elem_NNNN` id you would like to extend or transform, you may call `morphElement`, `transformElement`, or `textAnimate` on that id rather than placing a fresh element. If it names a `group_NNNN`, that group id is for `fadeElement` only; use one of the listed member `elem_NNNN` ids when you want to morph, transform, or animate a specific member. Recurrence is one of the strongest compositional moves available — a thing returning, slightly changed, makes the scene feel composed rather than serial. This is an option, not a mandate.
 
 Avoid these failure modes:
 
@@ -613,8 +639,9 @@ Avoid these failure modes:
 - Binding `color_hue` on text — text readability matters more than flashy color cycling.
 - Using `curve: "linear"` with `hijaz_tahwil` — impulses need the impulse curve to be visible.
 - Setting `smoothing_ms` below 30 — jittery, reads as a glitch rather than a response.
+- A composite scene with no live member — three or more elements arriving frozen is a missed cue.
 
-A good reactive scene is one where most elements are still, a few are slowly reactive (intensity-driven), and one or two are sharply reactive (tahwil impulses or onset pulses).
+A good reactive scene is one where most elements carry one live coupling each, a handful are slowly reactive (intensity-driven), and one or two are sharply reactive (tahwil impulses or onset pulses). A few elements are completely still by deliberate choice. The mix reads as a room that is listening, not a screen of widgets.
 
 ---
 
