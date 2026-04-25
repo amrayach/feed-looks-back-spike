@@ -16,7 +16,7 @@ import {
   validateOrThrow, cycleOutputSchema, appendValidationLog,
 } from "./bake_io.mjs";
 import {
-  buildSystemPrefix, buildUserMessage, callBake,
+  buildSystemPrefix, buildImageContentBlocks, buildUserMessage, callBake,
   extractRationaleAndToolCalls,
 } from "./bake_anthropic.mjs";
 
@@ -122,7 +122,7 @@ function inRange(idx, range) {
 }
 
 async function bakeOneCycle({ cycle, layout, plan, cycles,
-                              decisionHistory, system, tools, template,
+                              decisionHistory, system, imagePrefix = [], tools, template,
                               thinkingBudget, effort, maxOutputTokens, mockFixtureDir, client }) {
   const intent = plan.per_cycle_intent[cycle.cycle_index];
   const act = plan.overall_arc.find(
@@ -144,7 +144,13 @@ async function bakeOneCycle({ cycle, layout, plan, cycles,
     CYCLE_INTENT: intent.intent,
     ENERGY_HINT: intent.energy_hint,
   });
-  const userMessage = buildUserMessage([{ label: "EXECUTION PASS", body: userText }]);
+  const userMessage = {
+    role: "user",
+    content: [
+      ...imagePrefix,
+      { type: "text", text: `### EXECUTION PASS\n\n${userText}` },
+    ],
+  };
 
   const sig = computeSignature({
     cycle_index: cycle.cycle_index,
@@ -216,9 +222,10 @@ export async function runCycles({ bakeDir, corpus, concurrency = 5,
     { path: layout.dspPanelPng, label: "track DSP panel" },
   ];
   const system = buildSystemPrefix({
-    promptFiles, imageFiles, summaryJsonPath: layout.summaryJson,
+    promptFiles, summaryJsonPath: layout.summaryJson,
     compositionPlanPath: layout.compositionPlanJson,
   });
+  const imagePrefix = buildImageContentBlocks({ imageFiles });
   const template = readFileSync(PROMPT_TEMPLATE_PATH, "utf8");
 
   const decisionHistory = [];
@@ -262,7 +269,7 @@ export async function runCycles({ bakeDir, corpus, concurrency = 5,
       return await bakeOneCycle({
         cycle, layout, plan, cycles,
         decisionHistory: snapshotHistory,
-        system, tools, template, thinkingBudget, effort, maxOutputTokens,
+        system, imagePrefix, tools, template, thinkingBudget, effort, maxOutputTokens,
         mockFixtureDir, client,
       });
     }));
