@@ -2,26 +2,26 @@
   {
     "path": "./placeholders/positive_01.svg",
     "role": "positive",
-    "label": "figurative miniature painting — human figure with ornamental border; line weight, palette, rootedness in human form"
+    "label": "solitary figure in soft shadow with framing border — human form alone in a contemplative space; rooted in the body and the breath, not in any architectural setting"
   },
   {
     "path": "./placeholders/positive_02.svg",
     "role": "positive",
-    "label": "architectural interior photography — arched doorway with light wash; threshold as dramatic subject"
+    "label": "an open palm warming in low candlelight — interior gesture of care; the held breath of attention, hand as figurative subject"
   },
   {
     "path": "./placeholders/positive_03.svg",
     "role": "positive",
-    "label": "calligraphic specimen — letterform as image; the stroke itself as the subject"
+    "label": "a slow ink line drying on paper — calligraphic stroke as material; weight, breath, and pause, not decorative script"
   },
   {
     "path": "./placeholders/anchor_01.svg",
     "role": "anchor",
-    "label": "mihrab niche silhouette — tradition anchor; the shape that says 'this tradition, this place'"
+    "label": "thin line of moonlight on still water at night — single horizontal stroke of soft light catching a dark surface; the scene's sustained breath, the canonical Bayati signature"
   },
   {
     "path": "./placeholders/negative_01.svg",
     "role": "negative",
-    "label": "NOT this — generic AI generative-art aesthetic (abstract flow fields, pure particle composition, no recognisable subject)"
+    "label": "NOT this — generic synthetic visualizer aesthetic (unlocated flowing effects, no recognizable subject)"
   }
 ]

@@ -16,6 +16,47 @@ const {
     : "/shared/scene_layout.mjs"
 );
 
+// Chain A effects layer (per-element audio-reactive). The reducer calls
+// onElementMounted on each new wrapper and onTextFade before fading text;
+// chain_a's own initChainA is wired separately in stage.html and runs the
+// per-frame loop. If chain_a is unavailable (e.g. test harness), the
+// imports return undefined and the calls below noop via guarded chains.
+const _chainA = await import(
+  import.meta.url.startsWith("file:")
+    ? "./chain_a.mjs"
+    : "/browser/chain_a.mjs"
+).catch(() => ({ onElementMounted: null, onTextFade: null }));
+const onElementMounted = _chainA.onElementMounted ?? null;
+const onTextFade = _chainA.onTextFade ?? null;
+
+// Map the codebase's hijaz_state values to the Bayati FSM stages chain_a
+// expects on mount. Keeps the audio detector and feature bus untouched —
+// the rename is purely a per-frame view onto the same signal.
+const HIJAZ_TO_BAYATI_STATE = {
+  quiet: "ground",
+  approach: "ascent",
+  arrived: "pivot",
+  tahwil: "muhayyar",
+  aug2: "descent",
+};
+
+function snapshotFeaturesFromBus(bus) {
+  if (!bus || typeof bus.last !== "function") return {};
+  const hijazState = bus.last("hijaz_state") ?? "quiet";
+  return {
+    amplitude: bus.last("amplitude") ?? 0,
+    rms_mean: bus.last("amplitude") ?? 0,
+    onset_strength: bus.last("onset_strength") ?? 0,
+    spectral_centroid: bus.last("spectral_centroid") ?? 900,
+    hijaz_state: hijazState,
+    hijaz_intensity: bus.last("hijaz_intensity") ?? 0,
+    bayati_state: HIJAZ_TO_BAYATI_STATE[hijazState] ?? "ground",
+    bayati_intensity: bus.last("hijaz_intensity") ?? 0,
+    centroid_trend: "sustained",
+    silence_ratio: 0.3,
+  };
+}
+
 // Layer → z-index band. Keeping the numbers widely spaced so future
 // layers can slot in without renumbering; the existing RECT_CSS "z"
 // values from scene_layout are on the 0..5 range, so we keep those
@@ -70,6 +111,9 @@ function makeElementNode(documentLike, elementSpec) {
   // the dataset so FakeDocument + real-DOM inspections agree.
   const resolvedLayer = resolveLayerForElement(elementSpec);
   node.dataset.layer = resolvedLayer;
+  // Chain A: birth timestamp drives text vertical-drift and animation phase.
+  // Stamped here so it is correct even when chain_a is not wired (DOM-level).
+  node.dataset.bornAt = String(Date.now());
   const layerZ = zIndexForLayer(resolvedLayer);
   node.style = node.style ?? createStyle();
   // v6.2: images get a long opacity transition so auto-fade-out reads
@@ -90,24 +134,36 @@ function makeElementNode(documentLike, elementSpec) {
 
   if (elementSpec.type === "image") {
     const dimensions = imageDimensions(content.position);
-    node.style.cssText += `; ${TEXT_ANCHOR_CSS[position] ?? TEXT_ANCHOR_CSS["center-center"]}; overflow: hidden; border-radius: 24px; width: ${dimensions.width}; height: ${dimensions.height}; border: ${dimensions.border}; box-shadow: ${dimensions.shadow}; z-index: ${dimensions.z}; background: rgba(20,16,13,0.72);`;
+    const imageBorder = content.browser_url ? dimensions.border : "0";
+    const imageShadow = content.browser_url ? dimensions.shadow : "none";
+    node.style.cssText += `; ${TEXT_ANCHOR_CSS[position] ?? TEXT_ANCHOR_CSS["center-center"]}; overflow: hidden; border-radius: ${dimensions.radius ?? "8px"}; width: ${dimensions.width}; height: ${dimensions.height}; border: ${imageBorder}; box-shadow: ${imageShadow}; z-index: ${layerZ + dimensions.z}; background: transparent;`;
     if (content.browser_url) {
       const img = documentLike.createElement("img");
       img.src = content.browser_url;
       img.alt = content.query ?? "image";
       img.style = img.style ?? createStyle();
-      img.style.cssText = "display: block; width: 100%; height: 100%; object-fit: cover; filter: saturate(0.92) brightness(0.97);";
+      img.style.cssText = [
+        "display: block",
+        "width: 100%",
+        "height: 100%",
+        "object-fit: cover",
+        "opacity: 0.74",
+        "mix-blend-mode: screen",
+        "filter: saturate(0.86) brightness(1.14) contrast(0.82)",
+        "mask-image: radial-gradient(ellipse at center, #000 0%, #000 48%, rgba(0,0,0,0.72) 64%, transparent 100%)",
+        "-webkit-mask-image: radial-gradient(ellipse at center, #000 0%, #000 48%, rgba(0,0,0,0.72) 64%, transparent 100%)",
+      ].join("; ");
       node.appendChild(img);
       if (content.attribution?.photographer_name) {
         const credit = documentLike.createElement("div");
         credit.textContent = `Photo by ${content.attribution.photographer_name}`;
         credit.style = credit.style ?? createStyle();
-        credit.style.cssText = "position: absolute; right: 8px; bottom: 6px; padding: 3px 6px; background: rgba(10,10,13,0.72); color: #f5f0e8; font: 0.68rem/1.2 Georgia, serif; border-radius: 2px; max-width: 78%; text-align: right;";
+        credit.style.cssText = "position: absolute; right: 8px; bottom: 6px; padding: 0; background: transparent; color: rgba(245,240,232,0.34); font: 0.62rem/1.2 Georgia, serif; max-width: 78%; text-align: right; text-shadow: 0 1px 6px rgba(0,0,0,0.3);";
         node.appendChild(credit);
       }
     } else {
       node.textContent = content.query ?? content.image_error ?? "image";
-      node.style.cssText += "; display: flex; align-items: center; justify-content: center; background: rgba(40,32,26,0.4); color: #d9cbb2; text-align: center; padding: 12px; font: 0.85rem/1.2 Georgia, serif;";
+      node.style.cssText += "; display: flex; align-items: center; justify-content: center; color: rgba(234,221,228,0.36); text-align: center; padding: 12px; font: 0.85rem/1.2 Georgia, serif;";
     }
     return node;
   }
@@ -124,6 +180,7 @@ export function createSceneReducer({
   setTimeoutImpl = globalThis.setTimeout,
   bindingEngine = null,
   p5Sandbox = null,
+  featureBus = null,
 } = {}) {
   if (!mount) throw new Error("mount is required");
 
@@ -188,6 +245,26 @@ export function createSceneReducer({
         hasMotion ? elementSpec.motion : null,
       );
     }
+    // Chain A mount hook: applies Ken Burns / state filter / blend mode for
+    // images, blend mode for SVG, and the typewriter entrance for text.
+    // Stamps `data-chain-a="active"` so the chain_a per-frame loop visits
+    // this wrapper. Guarded against missing chain_a (e.g. unit-test harness).
+    if (typeof onElementMounted === "function") {
+      try {
+        onElementMounted(
+          node,
+          node.dataset.elementType,
+          node.dataset.layer,
+          snapshotFeaturesFromBus(featureBus),
+        );
+      } catch (err) {
+        // Effects are non-load-bearing — never let a chain_a failure
+        // prevent the element from mounting.
+        if (typeof console !== "undefined" && typeof console.warn === "function") {
+          console.warn("[chain_a] onElementMounted threw:", err);
+        }
+      }
+    }
   }
 
   function removeElement(elementId, durationMs = 0) {
@@ -214,6 +291,26 @@ export function createSceneReducer({
       }
     };
     if (durationMs > 0) {
+      // Chain A erosion exit: when fading a text element that chain_a is
+      // animating, kick off the char-stagger erosion BEFORE we write
+      // opacity:0. Recompute durationMs from silenceAtBirth so the safety
+      // opacity fade matches the erosion timeline (texts born in silence
+      // linger ~2s; texts born in dense passages fall in ~600ms).
+      if (
+        node.dataset.elementType === "text" &&
+        node.dataset.chainA === "active" &&
+        typeof onTextFade === "function"
+      ) {
+        try {
+          onTextFade(node);
+        } catch (err) {
+          if (typeof console !== "undefined" && typeof console.warn === "function") {
+            console.warn("[chain_a] onTextFade threw:", err);
+          }
+        }
+        const silence = parseFloat(node.dataset.silenceAtBirth ?? "0.3");
+        durationMs = silence > 0.5 ? 2000 : silence < 0.2 ? 600 : 1200;
+      }
       // v6.2: the patch's duration_ms is the authoritative fade length.
       // Rewrite the CSS `transition: opacity ... ease` line to match so
       // the opacity decay animates over exactly `durationMs`. Without
@@ -627,6 +724,10 @@ if (isDirectNodeExecution) {
       fail += 1;
       process.stdout.write(`  FAIL ${desc}\n    ${err.message}\n`);
     }
+  }
+  function effectiveZIndex(cssText) {
+    const matches = [...String(cssText ?? "").matchAll(/z-index:\s*(-?\d+)/g)];
+    return matches.length ? Number(matches.at(-1)[1]) : null;
   }
 
   t("background.set updates stage background", () => {
@@ -1070,6 +1171,8 @@ if (isDirectNodeExecution) {
     const fgNode = freeLayer.children[1];
     assert.match(bgNode.style.cssText, /z-index:\s*10\b/);
     assert.match(fgNode.style.cssText, /z-index:\s*1000\b/);
+    assert.equal(effectiveZIndex(bgNode.style.cssText), 10);
+    assert.equal(effectiveZIndex(fgNode.style.cssText), 1000);
     assert.equal(bgNode.dataset.layer, "background");
     assert.equal(fgNode.dataset.layer, "foreground");
   });
@@ -1104,6 +1207,8 @@ if (isDirectNodeExecution) {
     const freeLayer = mount.children[0];
     assert.equal(freeLayer.children[0].dataset.layer, "midground");
     assert.equal(freeLayer.children[1].dataset.layer, "foreground");
+    assert.equal(effectiveZIndex(freeLayer.children[0].style.cssText), 100);
+    assert.equal(effectiveZIndex(freeLayer.children[1].style.cssText), 1000);
   });
 
   t("image element uses 8s opacity transition so auto-fade dissolves instead of blinks", () => {

@@ -71,6 +71,15 @@ export const SCENE_OCCUPANCY_FLOOR = 6;
 // SCENE OVERVIEW emits a "due" signal so Opus has a visible handle on the
 // cadence the prompt names.
 export const SCENE_BACKGROUND_FLOOR_CYCLES = 12;
+export const IMAGE_CADENCE_FLOOR_CYCLES = 3;
+export const FIRST_COMPOSITE_DUE_CYCLE = 6;
+export const TRANSFORM_LOOP_WINDOW_CYCLES = 3;
+// P5 gesture cadence — mirror of IMAGE/COMPOSITION debt-trackers. The
+// always-on shader bed handles ambient atmosphere, so only addP5Sketch
+// (localized, foreground) is tracked. setP5Background is occluded and
+// counted out at the prompt layer.
+export const P5_GESTURE_FLOOR_CYCLES = 8;
+export const FIRST_P5_GESTURE_DUE_CYCLE = 8;
 
 // Nine-region grid used by computeOverview, in the exact order emitted on
 // the Spatial line so the format is stable for Opus.
@@ -310,6 +319,171 @@ export function formatRecentDecisions(decisionHistory, currentCycleIndex, option
       lines.push(`  cycle ${ci}: ${entry.tool} "${entry.summary}"${idPart}${reactPart}`);
     }
   }
+  return lines.join("\n");
+}
+
+function _createdCycleNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function _latestCycle(values) {
+  let latest = null;
+  for (const value of values) {
+    const n = _createdCycleNumber(value);
+    if (n === null) continue;
+    if (latest === null || n > latest) latest = n;
+  }
+  return latest;
+}
+
+function _countRecentDecisionTools(decisionHistory, currentCycleIndex, toolNames, windowCycles) {
+  if (!Array.isArray(decisionHistory) || !Number.isInteger(currentCycleIndex)) return 0;
+  const names = new Set(toolNames);
+  const start = currentCycleIndex - Math.max(1, windowCycles);
+  let count = 0;
+  for (const entry of decisionHistory) {
+    if (!entry || !names.has(entry.tool)) continue;
+    if (!Number.isInteger(entry.cycle_index)) continue;
+    if (entry.cycle_index >= start && entry.cycle_index < currentCycleIndex) count += 1;
+  }
+  return count;
+}
+
+function _formatIdList(ids, max = 4) {
+  if (!Array.isArray(ids) || ids.length === 0) return "none";
+  const shown = ids.slice(0, max).join(", ");
+  return ids.length > max ? `${shown}, +${ids.length - max} more` : shown;
+}
+
+export function formatDirectorStatus(state, { cyclesTotal = null } = {}) {
+  if (!state || typeof state !== "object") return null;
+  const currentCycle = state.current_cycle_index;
+  const elements = Array.isArray(state.elements) ? state.elements : [];
+  const images = elements.filter((e) => e?.type === "image");
+  const activeImages = images.filter((e) => !e.faded);
+  const activeImageIds = activeImages.map((e) => e.element_id).filter(Boolean);
+  const lastImageCycle = _latestCycle(images.map((e) => e.created_at_cycle));
+  const cyclesSinceImage =
+    Number.isInteger(currentCycle) && lastImageCycle !== null
+      ? currentCycle - lastImageCycle
+      : null;
+  const imageStatus =
+    activeImages.length === 0
+      ? "OVERDUE"
+      : cyclesSinceImage === null
+        ? "OVERDUE"
+        : cyclesSinceImage >= IMAGE_CADENCE_FLOOR_CYCLES
+          ? "DUE"
+          : "fresh";
+
+  const groups = state.composition_groups && typeof state.composition_groups === "object"
+    ? Object.values(state.composition_groups)
+    : [];
+  const groupCount = groups.length;
+  const lastCompositeCycle = _latestCycle(groups.map((g) => g.created_at_cycle));
+  const cyclesSinceComposite =
+    Number.isInteger(currentCycle) && lastCompositeCycle !== null
+      ? currentCycle - lastCompositeCycle
+      : null;
+  const progress =
+    Number.isInteger(currentCycle) && Number.isInteger(cyclesTotal) && cyclesTotal > 0
+      ? (currentCycle + 1) / cyclesTotal
+      : null;
+  const finalThird = progress !== null && progress >= 0.66;
+  const finalFifth = progress !== null && progress >= 0.8;
+  const compositeStatus =
+    groupCount === 0 && Number.isInteger(currentCycle) && currentCycle >= FIRST_COMPOSITE_DUE_CYCLE
+      ? "OVERDUE"
+      : finalFifth && (lastCompositeCycle === null || cyclesSinceComposite >= 5)
+        ? "FINAL TABLEAU DUE"
+        : finalThird && groupCount < 2
+          ? "DUE"
+          : "fresh";
+
+  // P5 gesture cadence — derive last localized placement from
+  // activity_history rather than state.p5_sketches because the latter
+  // is capped at 3 and loses entries on eviction. activity_history is
+  // capped at ACTIVITY_HISTORY_MAX (64), well above any cadence window.
+  const p5Activity = Array.isArray(state.activity_history)
+    ? state.activity_history.filter((a) => a?.kind === "p5_sketch")
+    : [];
+  const lastP5Cycle = _latestCycle(p5Activity.map((a) => a?.cycle_index));
+  const cyclesSinceP5 =
+    Number.isInteger(currentCycle) && lastP5Cycle !== null
+      ? currentCycle - lastP5Cycle
+      : null;
+  const p5Status =
+    Number.isInteger(currentCycle) &&
+    currentCycle >= FIRST_P5_GESTURE_DUE_CYCLE &&
+    lastP5Cycle === null
+      ? "OVERDUE"
+      : cyclesSinceP5 !== null && cyclesSinceP5 >= P5_GESTURE_FLOOR_CYCLES
+        ? "DUE"
+        : "fresh";
+  const p5Age =
+    cyclesSinceP5 === null
+      ? "never"
+      : `${cyclesSinceP5} cycle${cyclesSinceP5 === 1 ? "" : "s"} ago`;
+
+  const decisionHistory = Array.isArray(state.decision_history) ? state.decision_history : [];
+  const transformish = _countRecentDecisionTools(
+    decisionHistory,
+    currentCycle,
+    ["transformElement", "paletteShift", "pulseScene", "textAnimate"],
+    TRANSFORM_LOOP_WINDOW_CYCLES,
+  );
+  const placements = _countRecentDecisionTools(
+    decisionHistory,
+    currentCycle,
+    ["addImage", "addSVG", "addText", "addCompositeScene", "addP5Sketch", "setP5Background"],
+    TRANSFORM_LOOP_WINDOW_CYCLES,
+  );
+  const transformLoop =
+    transformish >= 4 && placements === 0
+      ? "TOO MUCH RECOMPOSITION"
+      : transformish >= 3 && placements <= 1
+        ? "watch"
+        : "ok";
+
+  const imageAge =
+    cyclesSinceImage === null
+      ? "never"
+      : `${cyclesSinceImage} cycle${cyclesSinceImage === 1 ? "" : "s"} ago`;
+  const compositeAge =
+    cyclesSinceComposite === null
+      ? "never"
+      : `${cyclesSinceComposite} cycle${cyclesSinceComposite === 1 ? "" : "s"} ago`;
+
+  const lines = ["SHOW DIRECTOR STATUS:"];
+  lines.push(
+    `IMAGE CADENCE: ${imageStatus}. Active images: ${activeImages.length} ` +
+    `(${_formatIdList(activeImageIds)}). Last image: ${imageAge}. ` +
+    `Floor: place a new photograph at least every ${IMAGE_CADENCE_FLOOR_CYCLES} cycles unless the music is explicitly empty. ` +
+    `Do not use lifetime_s:null for images; live image turnover is required.`,
+  );
+  lines.push(
+    `COMPOSITION DEBT: ${compositeStatus}. Composite groups so far: ${groupCount}. ` +
+    `Last composite: ${compositeAge}. Use addCompositeScene for structural arrivals, climaxes, and the final tableau; ` +
+    `single transform/palette calls do not count as a composed moment.`,
+  );
+  lines.push(
+    `P5 GESTURE: ${p5Status}. Localized sketches placed so far: ${p5Activity.length}. ` +
+    `Last localized sketch: ${p5Age}. ` +
+    `Floor: place a new addP5Sketch gesture at least every ${P5_GESTURE_FLOOR_CYCLES} cycles after the first; first due by cycle ${FIRST_P5_GESTURE_DUE_CYCLE}. ` +
+    `setP5Background is occluded by the always-on shader bed — do not call it.`,
+  );
+  lines.push(
+    `TOOL MIX WARNING: ${transformLoop}. Prior ${TRANSFORM_LOOP_WINDOW_CYCLES} cycles had ` +
+    `${transformish} transform/palette/pulse/text-animation calls and ${placements} placement calls. ` +
+    `If this says watch or TOO MUCH RECOMPOSITION, do not answer with another transform/palette/pulse/text-animation unless the music has reached a final tableau or a major structural event; prefer new image/SVG/text/composite material.`,
+  );
+  lines.push(
+    `IMAGE SOURCE GUIDE (Bayati interior-figurative; AVOID Hijaz architectural register): build queries from concrete photographed subjects: ` +
+    `open palm resting in low candlelight; head bowed in shadow with soft side light; moonlight on still water at night; ` +
+    `loose linen falling across a dark surface; single hand cupped around a small flame; the back of a person at a window at night; ` +
+    `single feather on dark cloth; solitary figure walking across a dark plain at dusk. ` +
+    `Avoid arched doorways, plaster walls, stone interiors, lamps on stone ledges (Hijaz register). Avoid broad place names and purely poetic queries.`,
+  );
   return lines.join("\n");
 }
 
@@ -2382,6 +2556,64 @@ if (isDirectNodeExecution) {
     recordDecision(s, { toolUseBlock: { name: "addText", input: { content: "x" } }, result: { element_id: "elem_0001" } });
     assert.equal(JSON.stringify(s.activity_history), beforeActivity);
     assert.equal(s.decision_history.length, 1);
+  });
+
+  t("formatDirectorStatus reports image cadence, composition debt, and transform loops", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 5, elapsedTotalS: 20 });
+    recordDecision(s, { toolUseBlock: { name: "transformElement", input: { element_id: "elem_0001", transform: { scale: 1.1 } } }, result: { ok: true, element_id: "elem_0001" } });
+    beginCycle(s, { cycleIndex: 6, elapsedTotalS: 25 });
+    recordDecision(s, { toolUseBlock: { name: "paletteShift", input: { target: { saturation: 1.1 } } }, result: { ok: true } });
+    recordDecision(s, { toolUseBlock: { name: "pulseScene", input: { intensity: 0.4 } }, result: { ok: true } });
+    beginCycle(s, { cycleIndex: 7, elapsedTotalS: 30 });
+    recordDecision(s, { toolUseBlock: { name: "textAnimate", input: { element_id: "elem_0002", effect: "shake" } }, result: { ok: true, element_id: "elem_0002" } });
+    beginCycle(s, { cycleIndex: 8, elapsedTotalS: 40 });
+    const rendered = formatDirectorStatus(s, { cyclesTotal: 31 });
+    assert.match(rendered, /SHOW DIRECTOR STATUS:/);
+    assert.match(rendered, /IMAGE CADENCE: OVERDUE/);
+    assert.match(rendered, /COMPOSITION DEBT: OVERDUE/);
+    assert.match(rendered, /P5 GESTURE: OVERDUE/);
+    assert.match(rendered, /TOOL MIX WARNING: TOO MUCH RECOMPOSITION/);
+    assert.match(rendered, /Do not use lifetime_s:null/);
+  });
+
+  t("formatDirectorStatus marks image cadence fresh after a recent active image", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 5, elapsedTotalS: 25 });
+    addElement(s, { type: "image", content: { query: "threshold light", position: "background" } });
+    beginCycle(s, { cycleIndex: 6, elapsedTotalS: 30 });
+    const rendered = formatDirectorStatus(s, { cyclesTotal: 31 });
+    assert.match(rendered, /IMAGE CADENCE: fresh/);
+    assert.match(rendered, /Active images: 1 \(elem_0001\)/);
+  });
+
+  t("formatDirectorStatus P5 GESTURE transitions through fresh|never -> OVERDUE -> fresh -> DUE", () => {
+    // before FIRST_P5_GESTURE_DUE_CYCLE: status is fresh and age is "never".
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 3, elapsedTotalS: 12 });
+    let rendered = formatDirectorStatus(s, { cyclesTotal: 31 });
+    assert.match(rendered, /P5 GESTURE: fresh/);
+    assert.match(rendered, /Last localized sketch: never/);
+    assert.match(rendered, /Localized sketches placed so far: 0/);
+
+    // at FIRST_P5_GESTURE_DUE_CYCLE with no placements yet: OVERDUE.
+    beginCycle(s, { cycleIndex: 8, elapsedTotalS: 35 });
+    rendered = formatDirectorStatus(s, { cyclesTotal: 31 });
+    assert.match(rendered, /P5 GESTURE: OVERDUE/);
+
+    // a placement at cycle 8 -> fresh on cycle 9.
+    addP5SketchSlot(s, { position: "top-center", size: "medium", code: "/* breath */", audio_reactive: true });
+    beginCycle(s, { cycleIndex: 9, elapsedTotalS: 40 });
+    rendered = formatDirectorStatus(s, { cyclesTotal: 31 });
+    assert.match(rendered, /P5 GESTURE: fresh/);
+    assert.match(rendered, /Last localized sketch: 1 cycle ago/);
+    assert.match(rendered, /Localized sketches placed so far: 1/);
+
+    // after P5_GESTURE_FLOOR_CYCLES with no further placements: DUE.
+    beginCycle(s, { cycleIndex: 8 + 8, elapsedTotalS: 80 });
+    rendered = formatDirectorStatus(s, { cyclesTotal: 31 });
+    assert.match(rendered, /P5 GESTURE: DUE/);
+    assert.match(rendered, /setP5Background is occluded/);
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);

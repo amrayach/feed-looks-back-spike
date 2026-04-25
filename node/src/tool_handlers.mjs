@@ -152,9 +152,9 @@ function handleAddImage(state, input) {
   if (layer.error) return { error: layer.error };
   const motion = validateMotion(input.motion);
   if (motion.error) return { error: motion.error };
-  // v6.2: images default to the TTL path (scene_state honors
-  // DEFAULT_LIFETIMES.image). An explicit null keeps the image
-  // permanent; an explicit numeric value overrides the TTL.
+  // Images default to the TTL path (scene_state honors DEFAULT_LIFETIMES.image).
+  // Treat explicit null the same as omission here: live runs should not get
+  // stuck on one permanent search result. Numeric values still override TTL.
   //
   // Preserve `undefined` (sentinel for "use the default") so scene_state
   // can apply DEFAULT_LIFETIMES[type]. Previously this handler collapsed
@@ -163,7 +163,7 @@ function handleAddImage(state, input) {
   const id = addElement(state, {
     type: "image",
     content: { query: input.query, position: input.position },
-    lifetime_s: input.lifetime_s,
+    lifetime_s: input.lifetime_s === null ? undefined : input.lifetime_s,
     reactivity: reactivity.normalized,
     layer: layer.normalized,
     motion: motion.normalized,
@@ -298,18 +298,13 @@ function handleAddCompositeScene(state, input) {
     perMemberMotion.push(result.motion);
   }
 
-  // Shared lifetime: explicit numeric value wins; otherwise if any member's
-  // default lifetime is permanent (null), the whole composite is permanent.
-  // If every member is timed, use the longest of those defaults.
-  let sharedLifetime;
-  if (typeof input.lifetime_s === "number" && Number.isFinite(input.lifetime_s)) {
-    sharedLifetime = input.lifetime_s;
-  } else {
-    const defaults = input.elements.map((el) => DEFAULT_LIFETIMES[el.type]);
-    sharedLifetime = defaults.some((value) => value === null)
-      ? null
-      : Math.max(...defaults);
-  }
+  // Composite lifetime: an explicit numeric group lifetime wins for all
+  // members. Otherwise each member uses its own type default so image turnover
+  // is preserved even inside a text+image composite.
+  const sharedLifetime =
+    typeof input.lifetime_s === "number" && Number.isFinite(input.lifetime_s)
+      ? input.lifetime_s
+      : undefined;
 
   const groupId = addCompositionGroup(state, { group_label: input.group_label });
 
@@ -658,14 +653,15 @@ if (isDirectNodeExecution) {
     assert.ok(s.elements[0].lifetime_s > 0);
   });
 
-  t("applyToolCall addImage with explicit lifetime_s: null keeps image permanent", () => {
+  t("applyToolCall addImage with explicit lifetime_s: null still uses image TTL", () => {
     const s = freshState();
     const r = applyToolCall(s, {
       name: "addImage",
       input: { query: "anchor", position: "background", lifetime_s: null },
     });
     assert.ok(r.element_id);
-    assert.equal(s.elements[0].lifetime_s, null);
+    assert.equal(typeof s.elements[0].lifetime_s, "number");
+    assert.ok(s.elements[0].lifetime_s > 0);
   });
 
   t("applyToolCall addImage without query returns error", () => {
@@ -936,11 +932,9 @@ if (isDirectNodeExecution) {
     assert.equal(s.elements.length, 0);
   });
 
-  t("applyToolCall addCompositeScene becomes permanent when any member type has null default lifetime", () => {
-    // v6.2: images now have a finite TTL default, so this invariant is
-    // exercised via text (which still defaults to null). The property
-    // under test — "a single permanent-default member makes the whole
-    // group permanent" — is unchanged.
+  t("applyToolCall addCompositeScene uses per-type lifetimes when no group lifetime is supplied", () => {
+    // Text can persist as accumulated testimony while visual members in the
+    // same group still receive their own turnover defaults.
     const s = freshState(0, 10);
     applyToolCall(s, {
       type: "tool_use",
@@ -954,16 +948,13 @@ if (isDirectNodeExecution) {
         ],
       },
     });
-    assert.equal(s.elements[0].lifetime_s, null);
+    assert.equal(s.elements[0].lifetime_s, DEFAULT_LIFETIMES.svg);
     assert.equal(s.elements[1].lifetime_s, null);
-    assert.equal(s.elements[0].fades_at_elapsed_s, null);
+    assert.equal(s.elements[0].fades_at_elapsed_s, 10 + DEFAULT_LIFETIMES.svg);
     assert.equal(s.elements[1].fades_at_elapsed_s, null);
   });
 
-  t("applyToolCall addCompositeScene with svg + image uses max(default_lifetime) — both finite now", () => {
-    // v6.2 regression: svg=35, image=IMAGE_DEFAULT_TTL_S (25) → shared
-    // lifetime is max(35, 25) = 35. Neither member-default is null, so
-    // the composite is NOT forced permanent.
+  t("applyToolCall addCompositeScene with svg + image preserves each default lifetime", () => {
     const s = freshState(0, 10);
     applyToolCall(s, {
       type: "tool_use",
@@ -977,8 +968,10 @@ if (isDirectNodeExecution) {
         ],
       },
     });
-    assert.equal(s.elements[0].lifetime_s, 35);
-    assert.equal(s.elements[1].lifetime_s, 35);
+    assert.equal(s.elements[0].lifetime_s, DEFAULT_LIFETIMES.svg);
+    assert.equal(s.elements[1].lifetime_s, DEFAULT_LIFETIMES.image);
+    assert.equal(s.elements[0].fades_at_elapsed_s, 10 + DEFAULT_LIFETIMES.svg);
+    assert.equal(s.elements[1].fades_at_elapsed_s, 10 + DEFAULT_LIFETIMES.image);
   });
 
   t("applyToolCall addCompositeScene with only SVG members uses the timed SVG default", () => {
@@ -1682,7 +1675,7 @@ if (isDirectNodeExecution) {
     assert.match(bad.error, /layer/);
   });
 
-  t("addImage default lifetime is TTL (not null); explicit null overrides to permanent", () => {
+  t("addImage default lifetime is TTL; explicit null is treated as default TTL", () => {
     const s = createInitialState();
     beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
     const r1 = applyToolCall(s, {
@@ -1691,13 +1684,14 @@ if (isDirectNodeExecution) {
     });
     const r2 = applyToolCall(s, {
       name: "addImage",
-      input: { query: "permanent anchor", position: "background", lifetime_s: null },
+      input: { query: "ttl anchor", position: "background", lifetime_s: null },
     });
     const e1 = s.elements.find((e) => e.element_id === r1.element_id);
     const e2 = s.elements.find((e) => e.element_id === r2.element_id);
     assert.equal(typeof e1.lifetime_s, "number");
     assert.ok(e1.lifetime_s > 0);
-    assert.equal(e2.lifetime_s, null);
+    assert.equal(typeof e2.lifetime_s, "number");
+    assert.ok(e2.lifetime_s > 0);
   });
 
   t("addP5Sketch accepts optional layer; invalid layer rejects", () => {

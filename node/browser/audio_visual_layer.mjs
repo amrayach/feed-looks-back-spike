@@ -67,36 +67,228 @@ const VISUAL_GRAMMAR = Object.freeze({
 
 const PALETTES = Object.freeze({
   quiet: Object.freeze({
-    base: [16, 20, 30],
-    warm: [204, 152, 82],
-    cool: [64, 121, 139],
-    accent: [232, 205, 150],
+    base: [42, 26, 39],
+    warm: [156, 111, 132],
+    cool: [74, 43, 68],
+    accent: [224, 179, 194],
   }),
   approach: Object.freeze({
-    base: [18, 17, 24],
-    warm: [217, 130, 76],
-    cool: [56, 151, 154],
-    accent: [232, 190, 119],
+    base: [48, 30, 43],
+    warm: [178, 118, 126],
+    cool: [93, 60, 92],
+    accent: [232, 190, 170],
   }),
   arrived: Object.freeze({
-    base: [20, 17, 15],
-    warm: [230, 184, 95],
-    cool: [86, 150, 135],
+    base: [59, 42, 26],
+    warm: [198, 151, 89],
+    cool: [102, 76, 67],
     accent: [246, 220, 160],
   }),
   tahwil: Object.freeze({
-    base: [12, 18, 26],
-    warm: [219, 165, 88],
-    cool: [77, 166, 190],
-    accent: [226, 223, 184],
+    base: [20, 22, 31],
+    warm: [217, 122, 58],
+    cool: [74, 85, 112],
+    accent: [238, 172, 106],
   }),
   aug2: Object.freeze({
-    base: [22, 15, 25],
+    base: [48, 24, 42],
     warm: [208, 109, 100],
-    cool: [83, 139, 190],
+    cool: [83, 70, 120],
     accent: [232, 185, 147],
   }),
 });
+
+const OPUS_SHADER_PALETTES = Object.freeze({
+  quiet: Object.freeze({
+    a: [42, 26, 39],
+    b: [156, 111, 132],
+    accent: [224, 179, 194],
+  }),
+  approach: Object.freeze({
+    a: [48, 30, 43],
+    b: [178, 118, 126],
+    accent: [232, 190, 170],
+  }),
+  arrived: Object.freeze({
+    a: [59, 42, 26],
+    b: [198, 151, 89],
+    accent: [246, 208, 139],
+  }),
+  tahwil: Object.freeze({
+    a: [20, 22, 31],
+    b: [74, 85, 112],
+    accent: [217, 122, 58],
+  }),
+  aug2: Object.freeze({
+    a: [48, 24, 42],
+    b: [208, 109, 100],
+    accent: [232, 185, 147],
+  }),
+});
+
+const SHADER_VERTEX_SOURCE = `
+attribute vec2 a_position;
+varying vec2 vUv;
+
+void main() {
+  vUv = a_position * 0.5 + 0.5;
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}
+`;
+
+// Ported from the Build_With_OPUS_4.7_hack full-screen shader. The text/HUD
+// from that project is deliberately not included; this is only the reactive
+// visual bed, with audio feature uniforms mapped locally.
+const SHADER_FRAGMENT_SOURCE = `
+precision highp float;
+precision highp int;
+
+varying vec2 vUv;
+
+uniform float u_time;
+uniform float u_breath;
+uniform float u_escalation;
+uniform vec3  u_color_a;
+uniform vec3  u_color_b;
+uniform vec3  u_accent;
+uniform float u_noise_scale;
+uniform float u_noise_amp;
+uniform float u_distortion;
+uniform float u_palette_shift;
+uniform float u_grain;
+uniform vec2  u_resolution;
+uniform vec2  u_pulse;
+uniform float u_pulse_strength;
+
+vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
+vec4 permute(vec4 x) { return mod289(((x * 34.0) + 1.0) * x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+float snoise2(vec2 v) {
+  const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                     -0.577350269189626, 0.024390243902439);
+  vec2 i  = floor(v + dot(v, C.yy));
+  vec2 x0 = v - i + dot(i, C.xx);
+  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  vec4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+  i = mod289(i);
+  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+                 + i.x + vec3(0.0, i1.x, 1.0));
+  vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+  m = m * m;
+  m = m * m;
+  vec3 x = 2.0 * fract(p * C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+  vec3 g;
+  g.x  = a0.x  * x0.x  + h.x  * x0.y;
+  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+  return 130.0 * dot(m, g);
+}
+
+float snoise3(vec3 v) {
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i  = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy;
+  vec3 x3 = x0 - D.yyy;
+  i = mod289(i);
+  vec4 p = permute(permute(permute(
+              i.z + vec4(0.0, i1.z, i2.z, 1.0))
+            + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+            + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 0.142857142857;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x = x_ * ns.x + ns.yyyy;
+  vec4 y = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0) * 2.0 + 1.0;
+  vec4 s1 = floor(b1) * 2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0, p0), dot(p1, p1), dot(p2, p2), dot(p3, p3)));
+  p0 *= norm.x;
+  p1 *= norm.y;
+  p2 *= norm.z;
+  p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
+}
+
+void main() {
+  vec2 p = vUv - 0.5;
+  float aspect = u_resolution.x / max(u_resolution.y, 1.0);
+  p.x *= aspect;
+
+  float breath = 0.5 + 0.5 * sin(u_breath * 6.2831853);
+  float n = snoise3(vec3(p * u_noise_scale, u_time * 0.15));
+  float field = n * u_noise_amp;
+
+  vec2 warp = vec2(
+    snoise2(p * u_noise_scale * 1.3 + u_time * 0.08),
+    snoise2(p * u_noise_scale * 1.1 - u_time * 0.07)
+  ) * u_distortion;
+
+  float radial = length(p + warp) * (1.0 + 0.15 * u_escalation);
+  float mask = smoothstep(0.92, 0.1, radial);
+  float mix_t = clamp(0.5 + 0.5 * field + u_palette_shift, 0.0, 1.0);
+
+  vec3 base = mix(u_color_a, u_color_b, mix_t);
+  vec3 col = mix(base, u_accent, mask * (0.18 + 0.32 * breath));
+
+  vec2 pulsePos = vec2((u_pulse.x - 0.5) * aspect, 0.5 - u_pulse.y);
+  float pulseDist = length(p - pulsePos);
+  float pulse = exp(-10.0 * pulseDist * pulseDist) * u_pulse_strength;
+  col = mix(col, u_accent, clamp(pulse * 0.18, 0.0, 0.32));
+  col += u_accent * pulse * 0.025;
+
+  float grain = (snoise2(p * 420.0 + u_time * 10.0) * 0.5 + 0.5) * u_grain;
+  col += vec3(grain) * 0.08;
+  col = mix(col, col * col, u_escalation * 0.3);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+const SHADER_UNIFORM_NAMES = [
+  "u_time",
+  "u_breath",
+  "u_escalation",
+  "u_color_a",
+  "u_color_b",
+  "u_accent",
+  "u_noise_scale",
+  "u_noise_amp",
+  "u_distortion",
+  "u_palette_shift",
+  "u_grain",
+  "u_resolution",
+  "u_pulse",
+  "u_pulse_strength",
+];
 
 function clamp01(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
@@ -109,6 +301,19 @@ function smooth(current, target, factor) {
 
 function rgba(rgb, alpha) {
   return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha.toFixed(3)})`;
+}
+
+function mixRgb(a, b, t) {
+  const k = clamp01(t);
+  return [
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k,
+  ];
+}
+
+function shaderPaletteForFrame(frame) {
+  return OPUS_SHADER_PALETTES[frame?.state] ?? OPUS_SHADER_PALETTES.quiet;
 }
 
 function hashString(input) {
@@ -223,8 +428,173 @@ function resizeCanvas(canvas, ctx, windowLike) {
     canvas.width = width;
     canvas.height = height;
   }
-  if (ctx.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (ctx?.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { width: width / dpr, height: height / dpr, dpr };
+}
+
+function hasWebGlApi(gl) {
+  return Boolean(
+    gl &&
+      typeof gl.createShader === "function" &&
+      typeof gl.shaderSource === "function" &&
+      typeof gl.compileShader === "function" &&
+      typeof gl.createProgram === "function" &&
+      typeof gl.drawArrays === "function",
+  );
+}
+
+function compileWebGlShader(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const info = gl.getShaderInfoLog(shader) || "unknown shader compile error";
+    gl.deleteShader?.(shader);
+    throw new Error(info);
+  }
+  return shader;
+}
+
+function createWebGlProgram(gl, vertexSource, fragmentSource) {
+  const vertex = compileWebGlShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragment = compileWebGlShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  const program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.deleteShader?.(vertex);
+  gl.deleteShader?.(fragment);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const info = gl.getProgramInfoLog(program) || "unknown shader link error";
+    gl.deleteProgram?.(program);
+    throw new Error(info);
+  }
+  return program;
+}
+
+function strongestCommandPulse(commandPulses, timeS) {
+  let best = { x: 0.5, y: 0.5, strength: 0 };
+  for (const pulse of commandPulses ?? []) {
+    const age = Math.max(0, timeS - pulse.startedAtS);
+    const t = clamp01(age / Math.max(0.001, pulse.durationS));
+    if (t >= 1) continue;
+    const strength = (1 - t) * (1 - t) * (pulse.strength ?? 0);
+    if (strength > best.strength) {
+      best = { x: pulse.nx ?? 0.5, y: pulse.ny ?? 0.5, strength };
+    }
+  }
+  return best;
+}
+
+function shaderParamsForFrame(frame, pulse) {
+  const stateBoost =
+    frame.state === "aug2" ? 0.1 :
+    frame.state === "tahwil" ? 0.08 :
+    frame.state === "arrived" ? 0.04 :
+    frame.state === "approach" ? 0.025 : 0;
+  const pulseBoost = clamp01((pulse?.strength ?? 0) * 0.1);
+  return {
+    escalation: clamp01(frame.energy * 0.22 + frame.intensity * 0.08 + stateBoost + pulseBoost),
+    noiseAmp: 0.34 + frame.energy * 0.16 + frame.onset * 0.04,
+    noiseScale: 1.85 + frame.centroid * 0.85 + frame.intensity * 0.15,
+    distortion: 0.012 + frame.onset * 0.04 + pulseBoost * 0.055 + (frame.state === "aug2" ? 0.03 : 0),
+    paletteShift: (frame.centroid - 0.35) * 0.035 + frame.intensity * 0.025 + pulseBoost * 0.02,
+    grain: 0.12 + frame.energy * 0.08 + frame.onset * 0.025,
+  };
+}
+
+function createShaderBackgroundRenderer({ canvas, windowLike, onError }) {
+  const gl =
+    canvas.getContext?.("webgl", {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: false,
+    }) ??
+    canvas.getContext?.("experimental-webgl", {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: false,
+    });
+  if (!hasWebGlApi(gl)) return null;
+
+  try {
+    const program = createWebGlProgram(gl, SHADER_VERTEX_SOURCE, SHADER_FRAGMENT_SOURCE);
+    const positionLoc = gl.getAttribLocation(program, "a_position");
+    const uniformLocs = Object.fromEntries(
+      SHADER_UNIFORM_NAMES.map((name) => [name, gl.getUniformLocation(program, name)]),
+    );
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
+      gl.STATIC_DRAW,
+    );
+    gl.useProgram(program);
+    if (positionLoc >= 0) {
+      gl.enableVertexAttribArray(positionLoc);
+      gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+    }
+    gl.disable?.(gl.DEPTH_TEST);
+    gl.disable?.(gl.CULL_FACE);
+    gl.enable?.(gl.BLEND);
+    gl.blendFunc?.(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    function set1f(name, value) {
+      const loc = uniformLocs[name];
+      if (loc != null) gl.uniform1f(loc, value);
+    }
+    function set2f(name, a, b) {
+      const loc = uniformLocs[name];
+      if (loc != null) gl.uniform2f(loc, a, b);
+    }
+    function set3rgb(name, rgb) {
+      const loc = uniformLocs[name];
+      if (loc != null) gl.uniform3f(loc, rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
+    }
+
+    return {
+      kind: "webgl",
+      draw(frame, timeS, commandPulses) {
+        const size = resizeCanvas(canvas, null, windowLike);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        const pulse = strongestCommandPulse(commandPulses, timeS);
+        const params = shaderParamsForFrame(frame, pulse);
+        const palette = shaderPaletteForFrame(frame);
+        const colorB = mixRgb(palette.b, palette.accent, frame.energy * 0.045);
+
+        gl.useProgram(program);
+        set1f("u_time", timeS);
+        set1f("u_breath", timeS * (0.045 + frame.energy * 0.035));
+        set1f("u_escalation", params.escalation);
+        set3rgb("u_color_a", palette.a);
+        set3rgb("u_color_b", colorB);
+        set3rgb("u_accent", palette.accent);
+        set1f("u_noise_scale", params.noiseScale);
+        set1f("u_noise_amp", params.noiseAmp);
+        set1f("u_distortion", params.distortion);
+        set1f("u_palette_shift", params.paletteShift);
+        set1f("u_grain", params.grain);
+        set2f("u_resolution", Math.max(1, size.width), Math.max(1, size.height));
+        set2f("u_pulse", pulse.x, pulse.y);
+        set1f("u_pulse_strength", pulse.strength);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      },
+      dispose() {
+        try { gl.deleteBuffer?.(buffer); } catch { /* ignore */ }
+        try { gl.deleteProgram?.(program); } catch { /* ignore */ }
+      },
+    };
+  } catch (err) {
+    onError?.(err);
+    return null;
+  }
 }
 
 function archPath(ctx, cx, springY, span, rise, footY) {
@@ -410,9 +780,9 @@ function drawLayer(ctx, canvas, frame, timeS, windowLike, commandPulses = []) {
 
   const baseGradient = ctx.createLinearGradient?.(0, 0, width, height);
   if (baseGradient?.addColorStop) {
-    baseGradient.addColorStop(0, rgba(palette.base, 0.16 + energy * 0.08));
-    baseGradient.addColorStop(0.46, rgba(palette.cool, 0.04 + centroid * 0.08));
-    baseGradient.addColorStop(1, rgba(palette.warm, 0.06 + energy * 0.1));
+    baseGradient.addColorStop(0, rgba(palette.base, 0.98));
+    baseGradient.addColorStop(0.46, rgba(palette.cool, 0.52 + centroid * 0.14));
+    baseGradient.addColorStop(1, rgba(palette.warm, 0.44 + energy * 0.16));
     ctx.fillStyle = baseGradient;
     ctx.fillRect(0, 0, width, height);
   }
@@ -505,15 +875,17 @@ export function createAudioVisualLayer({
     "inset: 0",
     "width: 100%",
     "height: 100%",
-    "z-index: 1",
+    "z-index: 5",
     "pointer-events: none",
-    "mix-blend-mode: screen",
-    "opacity: 0.74",
+    "mix-blend-mode: normal",
+    "opacity: 1",
   ].join("; ");
   if (mount.firstChild && mount.insertBefore) mount.insertBefore(canvas, mount.firstChild);
   else mount.appendChild(canvas);
 
-  const ctx = canvas.getContext?.("2d");
+  const shaderRenderer = createShaderBackgroundRenderer({ canvas, windowLike, onError });
+  canvas.dataset.audioVisualRenderer = shaderRenderer?.kind ?? "2d";
+  const ctx = shaderRenderer ? null : canvas.getContext?.("2d");
   const reducedMotion = Boolean(windowLike?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
   const features = {
     amplitude: 0,
@@ -558,7 +930,8 @@ export function createAudioVisualLayer({
     }
     frame = computeVisualFrame(features, frame, { reducedMotion });
     commandPulses = commandPulses.filter((pulse) => lastTimeS - pulse.startedAtS < pulse.durationS);
-    if (ctx) drawLayer(ctx, canvas, frame, lastTimeS, windowLike, commandPulses);
+    if (shaderRenderer) shaderRenderer.draw(frame, lastTimeS, commandPulses);
+    else if (ctx) drawLayer(ctx, canvas, frame, lastTimeS, windowLike, commandPulses);
     if (rafImpl) rafHandle = rafImpl(tick);
   }
 
@@ -571,6 +944,7 @@ export function createAudioVisualLayer({
     for (const off of unsubscribers) off();
     audioEl?.removeEventListener?.("play", resumeAudioAnalysis);
     analyser?.close?.();
+    shaderRenderer?.dispose?.();
     canvas.remove?.();
   }
 
@@ -586,6 +960,7 @@ export function createAudioVisualLayer({
     canvas,
     stop,
     triggerCommandPulse,
+    getRendererKind: () => shaderRenderer?.kind ?? "2d",
     getFrame: () => frame,
     getFeatures: () => ({ ...features }),
     getCommandPulses: () => [...commandPulses],
@@ -657,7 +1032,8 @@ if (isDirectNodeExecution) {
     getBoundingClientRect() {
       return { width: 800, height: 450 };
     }
-    getContext() {
+    getContext(type = "2d") {
+      if (/webgl/i.test(type)) return this.webglContext ?? null;
       const calls = this.calls;
       return {
         setTransform: (...args) => calls.push(["setTransform", ...args]),
@@ -682,6 +1058,54 @@ if (isDirectNodeExecution) {
         set lineWidth(value) { calls.push(["lineWidth", value]); },
       };
     }
+  }
+
+  class FakeWebGlContext {
+    constructor(calls) {
+      this.calls = calls;
+      this.ARRAY_BUFFER = 34962;
+      this.STATIC_DRAW = 35044;
+      this.TRIANGLE_STRIP = 5;
+      this.FLOAT = 5126;
+      this.VERTEX_SHADER = 35633;
+      this.FRAGMENT_SHADER = 35632;
+      this.COMPILE_STATUS = 35713;
+      this.LINK_STATUS = 35714;
+      this.DEPTH_TEST = 2929;
+      this.CULL_FACE = 2884;
+      this.BLEND = 3042;
+      this.SRC_ALPHA = 770;
+      this.ONE_MINUS_SRC_ALPHA = 771;
+    }
+    createShader(type) { return { type }; }
+    shaderSource() {}
+    compileShader() {}
+    getShaderParameter() { return true; }
+    getShaderInfoLog() { return ""; }
+    deleteShader() {}
+    createProgram() { return {}; }
+    attachShader() {}
+    linkProgram() {}
+    getProgramParameter() { return true; }
+    getProgramInfoLog() { return ""; }
+    deleteProgram() {}
+    getAttribLocation() { return 0; }
+    getUniformLocation(_program, name) { return { name }; }
+    createBuffer() { return {}; }
+    bindBuffer() {}
+    bufferData() {}
+    useProgram() {}
+    enableVertexAttribArray() {}
+    vertexAttribPointer() {}
+    disable() {}
+    enable() {}
+    blendFunc() {}
+    viewport(...args) { this.calls.push(["viewport", ...args]); }
+    uniform1f(loc, value) { this.calls.push(["uniform1f", loc.name, value]); }
+    uniform2f(loc, a, b) { this.calls.push(["uniform2f", loc.name, a, b]); }
+    uniform3f(loc, a, b, c) { this.calls.push(["uniform3f", loc.name, a, b, c]); }
+    drawArrays(...args) { this.calls.push(["drawArrays", ...args]); }
+    deleteBuffer() {}
   }
 
   const fakeDocument = {
@@ -763,7 +1187,11 @@ if (isDirectNodeExecution) {
     });
     assert.equal(mount.children[0], layer.canvas);
     assert.equal(layer.canvas.dataset.audioVisualLayer, "1");
+    assert.equal(layer.getRendererKind(), "2d");
     assert.match(layer.canvas.style.cssText, /pointer-events: none/);
+    assert.match(layer.canvas.style.cssText, /z-index: 5/);
+    assert.match(layer.canvas.style.cssText, /opacity: 1/);
+    assert.match(SHADER_FRAGMENT_SOURCE, /precision highp float/);
     bus.dispatch("hijaz_state", "aug2");
     bus.dispatch("amplitude", 0.9);
     rafCallback(1000);
@@ -771,6 +1199,38 @@ if (isDirectNodeExecution) {
     assert.ok(layer.getFrame().energy > 0);
     assert.ok(layer.canvas.calls.some((call) => call[0] === "stroke"));
     assert.ok(layer.canvas.calls.some((call) => call[0] === "bezierCurveTo"));
+    layer.stop();
+  });
+
+  t("createAudioVisualLayer uses the WebGL shader renderer when available", () => {
+    const mount = new FakeNode("div");
+    const bus = createFeatureBus();
+    let rafCallback = null;
+    const doc = {
+      ...fakeDocument,
+      createElement(tag) {
+        const canvas = tag === "canvas" ? new FakeCanvas() : new FakeNode(tag);
+        if (tag === "canvas") canvas.webglContext = new FakeWebGlContext(canvas.calls);
+        return canvas;
+      },
+    };
+    const layer = createAudioVisualLayer({
+      mount,
+      bus,
+      documentLike: doc,
+      windowLike: { devicePixelRatio: 1, matchMedia: () => ({ matches: false }) },
+      rafImpl: (fn) => {
+        rafCallback = fn;
+        return 1;
+      },
+      cancelRafImpl: () => {},
+    });
+    bus.dispatch("amplitude", 0.8);
+    bus.dispatch("onset_strength", 0.5);
+    rafCallback(1000);
+    assert.equal(layer.getRendererKind(), "webgl");
+    assert.ok(layer.canvas.calls.some((call) => call[0] === "drawArrays"));
+    assert.ok(layer.canvas.calls.some((call) => call[0] === "uniform1f" && call[1] === "u_noise_amp"));
     layer.stop();
   });
 

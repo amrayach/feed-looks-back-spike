@@ -1,17 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500">
+  <!-- Bayati anchor: thin line of moonlight on still water at night.
+       Replaces the earlier arched-niche silhouette.
+       Single horizontal stroke of soft light catching a dark, still surface;
+       the scene's sustained breath. -->
   <rect width="500" height="500" fill="#0c0906"/>
-  <path d="M120 480 L120 240 C 120 160, 180 100, 250 100 C 320 100, 380 160, 380 240 L 380 480 Z"
-        fill="#1a1410" stroke="#e8c28e" stroke-width="3"/>
-  <path d="M160 480 L160 260 C 160 200, 200 160, 250 160 C 300 160, 340 200, 340 260 L 340 480"
-        fill="none" stroke="#c49565" stroke-width="1.5"/>
-  <g transform="translate(250 300)" stroke="#e8c28e" stroke-width="2" fill="none">
-    <line x1="0" y1="-50" x2="0" y2="150"/>
-    <line x1="-50" y1="40" x2="50" y2="40"/>
-    <line x1="-40" y1="100" x2="40" y2="100"/>
+  <!-- distant horizon (very faint) -->
+  <line x1="50" y1="240" x2="450" y2="240" stroke="#2a1f14" stroke-width="1" opacity="0.6"/>
+  <!-- water surface ripples, faint -->
+  <g stroke="#2a1f14" stroke-width="0.8" opacity="0.55" fill="none">
+    <path d="M50 280 Q 250 274 450 280"/>
+    <path d="M50 320 Q 250 314 450 320"/>
+    <path d="M50 360 Q 250 356 450 360"/>
+    <path d="M50 400 Q 250 396 450 400"/>
   </g>
-  <line x1="100" y1="480" x2="400" y2="480" stroke="#c49565" stroke-width="2"/>
-  <g stroke="#6a4a30" stroke-width="0.8" opacity="0.5">
-    <line x1="100" y1="460" x2="400" y2="460"/>
-    <line x1="100" y1="440" x2="400" y2="440"/>
-  </g>
+  <!-- The line of moonlight: layered widths for soft halo -->
+  <line x1="150" y1="250" x2="350" y2="250" stroke="#f5e6c8" stroke-width="1.4" opacity="0.92" stroke-linecap="round"/>
+  <line x1="180" y1="250" x2="320" y2="250" stroke="#e8d4a0" stroke-width="3.2" opacity="0.55" stroke-linecap="round"/>
+  <line x1="220" y1="250" x2="280" y2="250" stroke="#f5e6c8" stroke-width="6.5" opacity="0.32" stroke-linecap="round"/>
+  <!-- distant moon, small, in the upper field -->
+  <circle cx="250" cy="80" r="8" fill="#f5e6c8" opacity="0.78"/>
+  <circle cx="250" cy="80" r="16" fill="#f5e6c8" opacity="0.18"/>
+  <circle cx="250" cy="80" r="28" fill="#f5e6c8" opacity="0.06"/>
 </svg>
