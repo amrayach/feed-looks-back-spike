@@ -51,17 +51,17 @@ function textBlockFromFile(path, label) {
   return { type: "text", text: `### ${label}\n\n${text}` };
 }
 
-export function buildSystemPrefix({ promptFiles = [], imageFiles = [],
+export function buildSystemPrefix({ promptFiles = [],
                                     summaryJsonPath = null,
                                     compositionPlanPath = null,
-                                    extraText = [] } = {}) {
+                                    extraText = [],
+                                    cache = true } = {}) {
+  // Text-only blocks suitable for the API's `system` parameter.
+  // Anthropic's `system` field rejects non-text blocks (HTTP 400);
+  // images must go in user message content via buildImageContentBlocks.
   const blocks = [];
   for (const pf of promptFiles) {
     blocks.push(textBlockFromFile(pf.path, pf.label));
-  }
-  for (const ifx of imageFiles) {
-    if (ifx.label) blocks.push({ type: "text", text: `### ${ifx.label}` });
-    blocks.push(imageBlockFromFile(ifx.path));
   }
   if (summaryJsonPath) {
     const text = readFileSync(summaryJsonPath, "utf8");
@@ -74,7 +74,26 @@ export function buildSystemPrefix({ promptFiles = [], imageFiles = [],
   for (const t of extraText) {
     blocks.push({ type: "text", text: t });
   }
-  if (blocks.length > 0) {
+  if (cache && blocks.length > 0) {
+    blocks[blocks.length - 1] = {
+      ...blocks[blocks.length - 1],
+      cache_control: { type: "ephemeral" },
+    };
+  }
+  return blocks;
+}
+
+export function buildImageContentBlocks({ imageFiles = [], cache = true } = {}) {
+  // User-message content blocks: alternating text-label + image block.
+  // When cache=true, applies cache_control to the last image so the
+  // system prefix + image prefix are cached together as a stable
+  // prefix across per-cycle calls.
+  const blocks = [];
+  for (const ifx of imageFiles) {
+    if (ifx.label) blocks.push({ type: "text", text: `### ${ifx.label}` });
+    blocks.push(imageBlockFromFile(ifx.path));
+  }
+  if (cache && blocks.length > 0) {
     blocks[blocks.length - 1] = {
       ...blocks[blocks.length - 1],
       cache_control: { type: "ephemeral" },
@@ -135,11 +154,15 @@ export async function runComposition({ systemPrompt, userMessages = [], images =
                                        tools = [], client = null } = {}) {
   const system = buildSystemPrefix({
     extraText: systemPrompt ? [systemPrompt] : [],
-    imageFiles: images,
   });
-  const userMessage = userMessages.length > 0
-    ? { role: "user", content: userMessages }
-    : buildUserMessage([{ label: "COMPOSITION PASS", body: "" }]);
+  const imagePrefix = buildImageContentBlocks({ imageFiles: images });
+  let userMessage;
+  if (userMessages.length > 0) {
+    userMessage = { role: "user", content: [...imagePrefix, ...userMessages] };
+  } else {
+    const base = buildUserMessage([{ label: "COMPOSITION PASS", body: "" }]);
+    userMessage = { role: "user", content: [...imagePrefix, ...base.content] };
+  }
   return callBake({ system, userMessage, tools, thinkingBudget, effort, maxTokens: maxOutputTokens, client });
 }
 
@@ -244,11 +267,11 @@ if (isDirectNodeExecution) {
     assert.deepEqual(blocks[1].cache_control, { type: "ephemeral" });
   });
 
-  await t("buildSystemPrefix base64-encodes images with correct media_type", () => {
+  await t("buildImageContentBlocks base64-encodes images with correct media_type", () => {
     const tmp = mkdtempSync(join(tmpdir(), "bake-anthropic-img-"));
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
     writeFileSync(join(tmp, "img.png"), png);
-    const blocks = buildSystemPrefix({
+    const blocks = buildImageContentBlocks({
       imageFiles: [{ path: join(tmp, "img.png"), label: "spectrogram" }],
     });
     assert.equal(blocks.length, 2);

@@ -18,7 +18,7 @@ import {
   validateOrThrow, compositionPlanSchema, appendValidationLog,
 } from "./bake_io.mjs";
 import {
-  buildSystemPrefix, buildUserMessage, callBake,
+  buildSystemPrefix, buildImageContentBlocks, buildUserMessage, callBake,
   extractRationaleAndToolCalls,
 } from "./bake_anthropic.mjs";
 
@@ -175,9 +175,16 @@ export async function runComposition({ corpus, audio, bakeDir,
   ];
 
   const system = buildSystemPrefix({
-    promptFiles, imageFiles, summaryJsonPath: layout.summaryJson,
+    promptFiles, summaryJsonPath: layout.summaryJson,
   });
-  const userMessage = buildUserMessage([{ label: "COMPOSITION PASS", body: userText }]);
+  const imagePrefix = buildImageContentBlocks({ imageFiles });
+  const userMessage = {
+    role: "user",
+    content: [
+      ...imagePrefix,
+      { type: "text", text: `### COMPOSITION PASS\n\n${userText}` },
+    ],
+  };
 
   // Persist exact input assembly for inspection / replay.
   ensureDir(layout.root);
