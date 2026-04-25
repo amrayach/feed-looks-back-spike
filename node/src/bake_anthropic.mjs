@@ -10,15 +10,16 @@
 //   we do NOT surface hidden chain-of-thought as artifacts;
 //   only model-visible "text" + "tool_use" content is persisted).
 //
-// COST OVERRIDE: thinkingBudget defaults are:
-//   Pass 1 (Composition):  49152  (no change from original plan)
-//   Pass 2 (Execution):    16384  (down from plan's 32768)
-//   Pass 3 (Critique):     16384  (down from plan's 32768)
-//   Pass 3 (Refine):       16384  (down from plan's 32768)
-// Rationale: Opus 4.7 uses thinking:{type:"adaptive"} — the budget_tokens
-// parameter is fully removed on 4.7 and returns HTTP 400 if passed.
-// The thinkingBudget parameter is retained as documentation / cost tracking
-// only; it is NOT passed to the API.
+// COST OVERRIDE on Opus 4.7:
+// The plan originally specified thinking:{type:"enabled", budget_tokens:N},
+// but Opus 4.7 removed budget_tokens (returns HTTP 400). On 4.7, the actual
+// cost lever is output_config.effort. Defaults applied here:
+//   Pass 1 (Composition):  effort="xhigh"  — deepest reasoning for plan
+//   Pass 2 (Execution):    effort="medium" — per-cycle, plan does heavy lift
+//   Pass 3 (Critique):     effort="medium" — pattern matching against plan
+//   Pass 3 (Refine):       effort="medium" — applying critique
+// thinkingBudget is retained as a docs-only parameter for cost-tracking
+// metadata in artifacts; it is NOT forwarded to the API.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { readFileSync } from "node:fs";
@@ -101,19 +102,19 @@ export function extractRationaleAndToolCalls(content) {
 export async function callBake({ system, userMessage, tools = [],
                                  model = MODEL_DEFAULT,
                                  thinkingBudget, // retained for documentation/cost-tracking only
+                                 effort = "high", // Opus 4.7 cost lever; "xhigh"/"high"/"medium"/"low"/"max"
                                  maxTokens,
                                  client = null, signal = null }) {
   const c = client || new Anthropic();
-  // NOTE: Opus 4.7 uses thinking:{type:"adaptive"} — budget_tokens is fully
-  // removed on 4.7 and will return HTTP 400 if passed. thinkingBudget above
-  // is kept as a named parameter so callers can document their intent, but
-  // it is NOT forwarded to the API.
+  // Opus 4.7: budget_tokens is removed (HTTP 400 if passed). Cost is
+  // controlled via output_config.effort. thinkingBudget is docs-only.
   const params = {
     model,
     max_tokens: maxTokens,
     system,
     messages: [userMessage],
     thinking: { type: "adaptive" },
+    output_config: { effort },
   };
   if (tools.length > 0) params.tools = tools;
   const response = await c.messages.create(params, signal ? { signal } : undefined);
@@ -129,6 +130,7 @@ export async function callBake({ system, userMessage, tools = [],
 
 export async function runComposition({ systemPrompt, userMessages = [], images = [],
                                        thinkingBudget = 49152,
+                                       effort = "xhigh",
                                        maxOutputTokens = 16384,
                                        tools = [], client = null } = {}) {
   const system = buildSystemPrefix({
@@ -138,33 +140,36 @@ export async function runComposition({ systemPrompt, userMessages = [], images =
   const userMessage = userMessages.length > 0
     ? { role: "user", content: userMessages }
     : buildUserMessage([{ label: "COMPOSITION PASS", body: "" }]);
-  return callBake({ system, userMessage, tools, thinkingBudget, maxTokens: maxOutputTokens, client });
+  return callBake({ system, userMessage, tools, thinkingBudget, effort, maxTokens: maxOutputTokens, client });
 }
 
 export async function runExecution({ systemPrompt, cycleContext = "",
                                      thinkingBudget = 16384,
+                                     effort = "medium",
                                      maxOutputTokens = 8192,
                                      tools = [], client = null } = {}) {
   const system = buildSystemPrefix({
     extraText: systemPrompt ? [systemPrompt] : [],
   });
   const userMessage = buildUserMessage([{ label: "EXECUTION PASS", body: cycleContext }]);
-  return callBake({ system, userMessage, tools, thinkingBudget, maxTokens: maxOutputTokens, client });
+  return callBake({ system, userMessage, tools, thinkingBudget, effort, maxTokens: maxOutputTokens, client });
 }
 
 export async function runCritique({ systemPrompt, allCycles = "",
                                     thinkingBudget = 16384,
+                                    effort = "medium",
                                     maxOutputTokens = 8192,
                                     client = null } = {}) {
   const system = buildSystemPrefix({
     extraText: systemPrompt ? [systemPrompt] : [],
   });
   const userMessage = buildUserMessage([{ label: "CRITIQUE PASS", body: allCycles }]);
-  return callBake({ system, userMessage, tools: [], thinkingBudget, maxTokens: maxOutputTokens, client });
+  return callBake({ system, userMessage, tools: [], thinkingBudget, effort, maxTokens: maxOutputTokens, client });
 }
 
 export async function runRefine({ systemPrompt, weakCycle = "", critique = "",
                                   thinkingBudget = 16384,
+                                  effort = "medium",
                                   maxOutputTokens = 8192,
                                   tools = [], client = null } = {}) {
   const system = buildSystemPrefix({
@@ -174,7 +179,7 @@ export async function runRefine({ systemPrompt, weakCycle = "", critique = "",
     { label: "CYCLE TO REFINE", body: weakCycle },
     { label: "CRITIQUE", body: critique },
   ]);
-  return callBake({ system, userMessage, tools, thinkingBudget, maxTokens: maxOutputTokens, client });
+  return callBake({ system, userMessage, tools, thinkingBudget, effort, maxTokens: maxOutputTokens, client });
 }
 
 // ─── Self-tests ────────────────────────────────────────────────────
