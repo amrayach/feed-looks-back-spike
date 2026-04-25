@@ -68,6 +68,7 @@ const cycleIntentSchema = z.object({
   active_act: z.number().int().nonnegative(),
   intent: z.string().min(1),
   energy_hint: z.enum(["low", "rising", "high", "falling"]),
+  snapshot_time_s: z.number().nonnegative().optional(),
 }).strict();
 
 const elementVocabularySchema = z.object({

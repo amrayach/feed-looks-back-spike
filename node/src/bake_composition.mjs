@@ -139,6 +139,7 @@ const COMPOSITION_PLAN_SCHEMA_DOC = `
 
 export async function runComposition({ corpus, audio, bakeDir,
                                        thinkingBudget = 49152,
+                                       effort = "xhigh",
                                        maxOutputTokens = 16384,
                                        mockResponse = null,
                                        client = null } = {}) {
@@ -199,7 +200,7 @@ export async function runComposition({ corpus, audio, bakeDir,
       response = await callBake({
         system, userMessage,
         model: "claude-opus-4-7",
-        thinkingBudget, maxTokens: maxOutputTokens,
+        thinkingBudget, effort, maxTokens: maxOutputTokens,
         client,
       });
     }
@@ -217,6 +218,12 @@ export async function runComposition({ corpus, audio, bakeDir,
     parsed.model = response.model || parsed.model || "claude-opus-4-7";
     parsed.thinking_budget = parsed.thinking_budget || thinkingBudget;
     parsed.baked_at = parsed.baked_at || new Date().toISOString();
+    if (Array.isArray(parsed.per_cycle_intent) && Array.isArray(summary.cycle_to_seconds)) {
+      for (const entry of parsed.per_cycle_intent) {
+        const t = summary.cycle_to_seconds[entry.cycle];
+        if (typeof t === "number") entry.snapshot_time_s = t;
+      }
+    }
     try {
       validateOrThrow(compositionPlanSchema, parsed, "composition_plan");
     } catch (e) {
@@ -232,7 +239,21 @@ export async function runComposition({ corpus, audio, bakeDir,
 }
 
 function stripFences(text) {
-  return text.replace(/^```(?:json)?\s*\n/, "").replace(/\n```\s*$/, "").trim();
+  const fenced = text.match(/```(?:json)?\s*\n([\s\S]*?)\n?```/);
+  if (fenced) return fenced[1].trim();
+  const start = text.indexOf("{");
+  if (start === -1) return text.trim();
+  let depth = 0, inString = false, escape = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (escape) { escape = false; continue; }
+    if (c === "\\") { escape = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === "{") depth += 1;
+    else if (c === "}") { depth -= 1; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  return text.slice(start).trim();
 }
 
 // ─── CLI ───────────────────────────────────────────────────────────
