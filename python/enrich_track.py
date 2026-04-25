@@ -49,7 +49,7 @@ def render_spectrogram(audio_path: Path, out_png: Path):
     return float(librosa.get_duration(y=y, sr=sr)), int(sr)
 
 
-def render_dsp_panel(cycles, audio_path: Path, out_png: Path):
+def render_dsp_panel(cycles, out_png: Path):
     cycle_times = [c["snapshot_time_s"] for c in cycles]
     rms_means = [c["block_1_scalars"]["rms_mean"] for c in cycles]
     centroids = [c["block_1_scalars"]["centroid_mean_hz"] for c in cycles]
@@ -61,7 +61,6 @@ def render_dsp_panel(cycles, audio_path: Path, out_png: Path):
     for c in cycles:
         prose = c.get("block_2_summary", "") or ""
         for ev in HIJAZ_EVENT_KEYS:
-            label = ev.replace("-", "-")
             if (ev == "tahwil" and "Tahwil" in prose) \
                or (ev == "aug2" and "Augmented-second" in prose) \
                or (ev == "phrase-break" and "Phrase break" in prose) \
@@ -160,7 +159,7 @@ def main(argv=None) -> int:
     cycles = load_corpus(args.corpus)
     duration_s, sr = render_spectrogram(args.audio, args.out / "spectrogram.png")
     info = sf.info(str(args.audio))
-    event_timeline = render_dsp_panel(cycles, args.audio, args.out / "dsp_panel.png")
+    event_timeline = render_dsp_panel(cycles, args.out / "dsp_panel.png")
     summary = compute_summary(args.audio, cycles, duration_s, sr,
                               info.channels, event_timeline)
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2))
