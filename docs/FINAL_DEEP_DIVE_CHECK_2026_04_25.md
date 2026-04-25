@@ -67,11 +67,11 @@ submission docs now foreground validation, residual risk, and run commands.
 - Rewrote `README.md` to lead with the artistic statement (the *piece*
   before the directory layout), with explicit prize framing and pointers
   to the new public-facing description.
-- Rewrote `docs/SUBMISSION.md` to remove the only `Bashar/` reference in
-  any public-facing doc (was in the demo-shape table), pivot to
-  music-as-cultural-carrier framing rather than Arab-specific framing,
-  and replace the writeup draft with a public-safe distillation aligned
-  to the locked submission strategy.
+- Rewrote `docs/SUBMISSION.md` to remove a collaborator-naming
+  reference in the demo-shape table, pivot to music-as-cultural-carrier
+  framing rather than tradition-specific framing, and replace the
+  writeup draft with a public-safe distillation aligned to the locked
+  submission strategy.
 - Added `docs/PROJECT_DESCRIPTION.md` — a one-pager judges can read
   quickly. Distinct from internal form-field copy; public-safe.
 - Rewrote `node/canon/reference_photos/ATTRIBUTION.md` to present only
@@ -82,10 +82,10 @@ submission docs now foreground validation, residual risk, and run commands.
   - The seven unrecoverable reference photos (`02_*`, `05_*`, `07_*`,
     `09_*`, `10_*`, `11_*`, `12_*`).
   - `.codex/` and `node/.codex-preflight-write-check`.
-  - `docs/STATUS_FOR_BASHAR.md` and similar internal handoff docs that
-    were untracked at scrub time (`COORDINATOR_*_evening.md`,
-    `BAKE_MODE_HANDOFF_*.md`, `ULTRAREVIEW_*.md`,
-    `2026-*-session-*.md`).
+  - Untracked internal handoff docs whose filenames or contents
+    referenced collaborators or in-progress framing decisions
+    (`STATUS_FOR_*`, `COORDINATOR_*_evening`, `BAKE_MODE_HANDOFF_*`,
+    `ULTRAREVIEW_*`, `2026-*-session-*`).
 - Scrubbed two collaborator-naming code comments in
   `python/summarizer.py` (lines 327-329 and 380-385) to use
   domain-generic phrasing.
