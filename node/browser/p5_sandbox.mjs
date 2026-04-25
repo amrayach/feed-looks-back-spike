@@ -55,7 +55,17 @@ const ReadySchema = z.object({
   sketch_id: z.string().nullable().optional(),
 });
 const ErrorSchema = z.object({ type: z.literal("error"), message: z.string() });
-const SandboxMessageSchema = z.discriminatedUnion("type", [HeartbeatSchema, ReadySchema, ErrorSchema]);
+const LogSchema = z.object({
+  type: z.literal("log"),
+  level: z.enum(["log", "warn", "error"]),
+  message: z.string(),
+});
+const SandboxMessageSchema = z.discriminatedUnion("type", [
+  HeartbeatSchema,
+  ReadySchema,
+  ErrorSchema,
+  LogSchema,
+]);
 
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 2000;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 500;
@@ -147,6 +157,7 @@ export function createP5Sandbox({
   warmupGraceMs = INITIAL_WARMUP_GRACE_MS,
   onRetire = () => {},
   onSketchError = () => {},
+  onSketchLog = () => {},
   fallbackFactory,
   messageChannelCtor = MessageChannelCtor,
 } = {}) {
@@ -244,6 +255,12 @@ export function createP5Sandbox({
     } else if (parsed.data.type === "error") {
       onSketchError({ sketch_id: sketchId, message: parsed.data.message });
       retireAndReplace(sketchId, "sketch-error");
+    } else if (parsed.data.type === "log") {
+      onSketchLog({
+        sketch_id: sketchId,
+        level: parsed.data.level,
+        message: parsed.data.message,
+      });
     }
   }
 
@@ -586,6 +603,7 @@ if (isDirectNodeExecution) {
       warmupGraceMs: opts.warmupGraceMs,
       onRetire: opts.onRetire,
       onSketchError: opts.onSketchError,
+      onSketchLog: opts.onSketchLog,
       messageChannelCtor: NodeMessageChannel,
     });
     allSandboxes.push(sandbox);
@@ -698,6 +716,22 @@ if (isDirectNodeExecution) {
     await flush();
     const entry = sandbox._entries.get("sketch_c");
     assert.equal(entry.lastHeartbeat, 500);
+    sandbox.dispose();
+    port2.close();
+  });
+
+  await t("console log messages over port surface through onSketchLog", async () => {
+    const logs = [];
+    const { sandbox, mount } = makeSandbox({ onSketchLog: (info) => logs.push(info) });
+    sandbox.mountLocalized({ sketch_id: "sketch_log", position: "center", size: "small" });
+    const iframe = mount.children[0];
+    const { port2 } = handshake(iframe);
+    port2.postMessage({ type: "log", level: "warn", message: "lamp flicker" });
+    await flush();
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].sketch_id, "sketch_log");
+    assert.equal(logs[0].level, "warn");
+    assert.equal(logs[0].message, "lamp flicker");
     sandbox.dispose();
     port2.close();
   });

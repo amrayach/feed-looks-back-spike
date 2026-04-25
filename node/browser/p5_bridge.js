@@ -38,6 +38,10 @@
 (function () {
   var parentPort = null;
   var heartbeatIntervalId = null;
+  var pendingLogs = [];
+  var consoleLike = typeof console !== "undefined"
+    ? console
+    : { log: function () {}, warn: function () {}, error: function () {} };
 
   window.features = {
     amplitude: 0,
@@ -70,6 +74,37 @@
   }
   function postError(message) {
     portPost({ type: "error", message: String(message).slice(0, 500) });
+  }
+  function formatLogArg(arg) {
+    if (typeof arg === "string") return arg;
+    if (arg instanceof Error) return arg.stack || arg.message || String(arg);
+    try {
+      return JSON.stringify(arg);
+    } catch (_err) {
+      return String(arg);
+    }
+  }
+  function postLog(level, args) {
+    var message = Array.prototype.slice.call(args).map(formatLogArg).join(" ").slice(0, 1000);
+    var payload = { type: "log", level: level, message: message };
+    if (!parentPort) {
+      pendingLogs.push(payload);
+      if (pendingLogs.length > 20) pendingLogs.shift();
+      return;
+    }
+    portPost(payload);
+  }
+  ["log", "warn", "error"].forEach(function (level) {
+    var original = consoleLike[level] && consoleLike[level].bind(consoleLike);
+    consoleLike[level] = function () {
+      if (original) original.apply(consoleLike, arguments);
+      postLog(level, arguments);
+    };
+  });
+  function flushPendingLogs() {
+    while (pendingLogs.length > 0) {
+      portPost(pendingLogs.shift());
+    }
   }
 
   function handleIncoming(data) {
@@ -111,6 +146,7 @@
     // Signal readiness to the host via the port. No targetOrigin; the
     // port IS the capability.
     postReady(data.sketch_id);
+    flushPendingLogs();
     // Only start heartbeats once the port is up; before then, there is
     // no receiver, so heartbeats would be silently dropped.
     heartbeatIntervalId = setInterval(postHeartbeat, 500);

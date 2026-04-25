@@ -111,14 +111,14 @@ if (isDirectNodeExecution) {
   // on a stale vocabulary. We enforce both: presence (word-boundary
   // match) and no-extras (every `window.features.X` reference names
   // a canonical feature).
-  await t("invariant 1p (prompt surface): all six feature names appear in hijaz_base.md with no extras", async () => {
+  await t("invariant 1p (prompt surface): all six feature names appear in bayati_base.md with no extras", async () => {
     const { FEATURE_NAMES } = await import("./patch_protocol.mjs");
     const canonical = [...FEATURE_NAMES];
-    const body = read(join(NODE_ROOT, "prompts", "hijaz_base.md"));
+    const body = read(join(NODE_ROOT, "prompts", "bayati_base.md"));
 
     for (const name of canonical) {
       const re = new RegExp("\\b" + name + "\\b");
-      assert.ok(re.test(body), `feature "${name}" is missing from hijaz_base.md`);
+      assert.ok(re.test(body), `feature "${name}" is missing from bayati_base.md`);
     }
 
     // No extras: every `window.features.X` reference in code blocks
@@ -130,7 +130,7 @@ if (isDirectNodeExecution) {
     assert.deepEqual(
       extras,
       [],
-      `hijaz_base.md references non-canonical features via window.features.X: ${extras.join(", ")}`,
+      `bayati_base.md references non-canonical features via window.features.X: ${extras.join(", ")}`,
     );
   });
 

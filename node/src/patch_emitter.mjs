@@ -2,6 +2,7 @@ import { basename } from "node:path";
 
 import { fetchImage } from "./image_fetch.mjs";
 import { sanitizeCssBackground, isSvgMarkupValid } from "./sanitize.mjs";
+import { resolveAutoFadeDurationMs, IMAGE_AUTO_FADE_DURATION_MS } from "./scene_state.mjs";
 
 const DEFAULT_FADE_DURATION_MS = 400;
 
@@ -32,7 +33,26 @@ function normalizeElementForPatch(element, contentOverrides = null) {
   if (Array.isArray(element.reactivity) && element.reactivity.length > 0) {
     patch.reactivity = clone(element.reactivity);
   }
+  // v6.2 additions: layer + motion. Same shape-stability rule — only
+  // forward when the element actually carries them, so non-layered /
+  // non-motion elements stay byte-identical with pre-v6.2 wire format.
+  if (typeof element.layer === "string" && element.layer.length > 0) {
+    patch.layer = element.layer;
+  }
+  if (element.motion && typeof element.motion === "object") {
+    patch.motion = clone(element.motion);
+  }
   return patch;
+}
+
+// Exported helper used by run_spike.collectAutoFadePatches so the fade
+// duration is type-aware: images get a long dissolve (8 s), everything
+// else gets the short default. Keeping the resolution here (rather than
+// inlined in run_spike) means a future type addition only touches the
+// scene_state + emitter pair.
+export function autoFadeDurationForElement(element, fallbackMs = DEFAULT_FADE_DURATION_MS) {
+  const typed = resolveAutoFadeDurationMs(element);
+  return typeof typed === "number" && Number.isFinite(typed) ? typed : fallbackMs;
 }
 
 function invalidSvgPlaceholder(reason, label) {
@@ -51,6 +71,10 @@ async function emitAddImagePatch({ state, result, fetchImageImpl }) {
   const element = findElement(state, result.element_id);
   if (!element) return [];
 
+  return [await createElementAddPatch(element, { fetchImageImpl })];
+}
+
+async function imageContentOverrides(element, fetchImageImpl) {
   const imageResult = await fetchImageImpl(element.content.query);
   let browser_url = null;
   let image_error = null;
@@ -62,10 +86,27 @@ async function emitAddImagePatch({ state, result, fetchImageImpl }) {
     image_error = imageResult?.error ?? "image fetch failed";
   }
 
-  return [{
-    type: "element.add",
-    element: normalizeElementForPatch(element, { browser_url, image_error, attribution }),
-  }];
+  return { browser_url, image_error, attribution };
+}
+
+async function createElementAddPatch(element, { fetchImageImpl }) {
+  if (element.type === "image") {
+    const overrides = await imageContentOverrides(element, fetchImageImpl);
+    return {
+      type: "element.add",
+      element: normalizeElementForPatch(element, overrides),
+    };
+  }
+  if (element.type === "svg") {
+    const svg_markup = isSvgMarkupValid(element.content?.svg_markup)
+      ? element.content.svg_markup
+      : invalidSvgPlaceholder("invalid svg_markup", element.content?.semantic_label);
+    return {
+      type: "element.add",
+      element: normalizeElementForPatch(element, { svg_markup }),
+    };
+  }
+  return { type: "element.add", element: normalizeElementForPatch(element) };
 }
 
 export async function emitPatchesForToolResult({
@@ -83,14 +124,7 @@ export async function emitPatchesForToolResult({
     }
     case "addSVG": {
       const element = findElement(state, result.element_id);
-      if (!element) return [];
-      const svg_markup = isSvgMarkupValid(element.content?.svg_markup)
-        ? element.content.svg_markup
-        : invalidSvgPlaceholder("invalid svg_markup", element.content?.semantic_label);
-      return [{
-        type: "element.add",
-        element: normalizeElementForPatch(element, { svg_markup }),
-      }];
+      return element ? [await createElementAddPatch(element, { fetchImageImpl })] : [];
     }
     case "addImage":
       return emitAddImagePatch({ state, result, fetchImageImpl });
@@ -138,7 +172,7 @@ export async function emitPatchesForToolResult({
       if (result.retired_id) {
         patches.push({ type: "sketch.retire", sketch_id: result.retired_id });
       }
-      patches.push({
+      const addPatch = {
         type: "sketch.add",
         sketch_id: sketch.sketch_id,
         position: sketch.position,
@@ -146,16 +180,68 @@ export async function emitPatchesForToolResult({
         code: sketch.code,
         audio_reactive: Boolean(sketch.audio_reactive),
         lifetime_s: sketch.lifetime_s ?? null,
-      });
+      };
+      // v6.2: forward layer when the slot carries one. Absent layer
+      // keeps the wire shape stable with pre-v6.2 patches.
+      if (typeof sketch.layer === "string" && sketch.layer.length > 0) {
+        addPatch.layer = sketch.layer;
+      }
+      patches.push(addPatch);
       return patches;
     }
+    // ─── Recompose tool emissions (expanded-tools) ────────────────
+    // Each tool's handler validated inputs and returned an echo of the
+    // accepted parameters; we translate that echo into the matching
+    // patch. Patches are transient (patch_cache treats them as
+    // no-ops). morphElement also wrote the new content into
+    // scene_state.elements via its handler — that's how subsequent
+    // scene summaries see the morphed state.
+    case "transformElement":
+      return [{
+        type: "element.transform",
+        element_id: result.element_id,
+        transform: result.transform,
+        duration_ms: result.duration_ms,
+      }];
+    case "morphElement":
+      return [{
+        type: "element.morph",
+        element_id: result.element_id,
+        to: result.to,
+        duration_ms: result.duration_ms,
+      }];
+    case "pulseScene": {
+      const patch = {
+        type: "scene.pulse",
+        intensity: result.intensity,
+        duration_ms: result.duration_ms,
+      };
+      if (result.color) patch.color = result.color;
+      return [patch];
+    }
+    case "paletteShift":
+      return [{
+        type: "scene.palette_shift",
+        target: result.target,
+        duration_ms: result.duration_ms,
+      }];
+    case "textAnimate":
+      return [{
+        type: "text.animate",
+        element_id: result.element_id,
+        effect: result.effect,
+        duration_ms: result.duration_ms,
+      }];
     case "addCompositeScene": {
       const element_ids = Array.isArray(result.element_ids) ? result.element_ids : [];
       const groupId = result.composition_group_id;
-      const elementPatches = element_ids
+      const elements = element_ids
         .map((elementId) => findElement(state, elementId))
-        .filter(Boolean)
-        .map((element) => ({ type: "element.add", element: normalizeElementForPatch(element) }));
+        .filter(Boolean);
+      const elementPatches = [];
+      for (const element of elements) {
+        elementPatches.push(await createElementAddPatch(element, { fetchImageImpl }));
+      }
       const group = groupId ? findGroup(state, groupId) : null;
       const groupPatch = group
         ? [{
@@ -283,6 +369,37 @@ if (isDirectNodeExecution) {
     assert.equal(patches.find((patch) => patch.type === "composition_group.add").group.group_id, groupId);
   });
 
+  await t("addCompositeScene image members fetch and carry browser_url", async () => {
+    const state = freshState();
+    const groupId = addCompositionGroup(state, { group_label: "threshold arrival" });
+    const imageId = addElement(state, {
+      type: "image",
+      content: { query: "threshold light", position: "background", composition_group_id: groupId },
+      lifetime_s: null,
+    });
+    const textId = addElement(state, {
+      type: "text",
+      content: { content: "after", position: "lower-left", style: "", composition_group_id: groupId },
+      lifetime_s: null,
+    });
+    const block = { name: "addCompositeScene", input: { group_label: "threshold arrival" } };
+    const result = { composition_group_id: groupId, element_ids: [imageId, textId] };
+    const patches = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: block,
+      result,
+      fetchImageImpl: async () => ({
+        path: "/tmp/image_cache/composite123.jpg",
+        attribution: { photographer_name: "A", photographer_url: "u", photo_url: "p" },
+        cached: true,
+      }),
+    });
+    const imagePatch = patches.find((patch) => patch.element?.element_id === imageId);
+    assert.equal(imagePatch.element.content.browser_url, "/image_cache/composite123.jpg");
+    assert.equal(imagePatch.element.content.image_error, null);
+    assert.equal(imagePatch.element.content.attribution.photographer_name, "A");
+  });
+
   await t("element.add patch carries reactivity when the stored element has it", async () => {
     const state = freshState();
     const reactivity = [
@@ -377,6 +494,75 @@ if (isDirectNodeExecution) {
     // Defensive silence-of-b assertion so the test surface reads the
     // eviction intent clearly.
     assert.equal(b.retired_id, null);
+  });
+
+  await t("element.add patch carries layer + motion when the element has them", async () => {
+    const state = freshState();
+    const reactivity = [
+      { property: "opacity", feature: "amplitude", map: { in: [0, 1], out: [0.5, 1], curve: "linear" } },
+    ];
+    const element_id = addElement(state, {
+      type: "image",
+      content: { query: "lamp glow", position: "background" },
+      reactivity,
+      layer: "midground",
+      motion: { preset: "breathe", intensity: 0.8 },
+    });
+    const patches = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "addImage", input: { query: "lamp glow", position: "background" } },
+      result: { element_id },
+      fetchImageImpl: async () => ({ path: "/tmp/image_cache/abc.jpg", attribution: null }),
+    });
+    assert.equal(patches[0].element.layer, "midground");
+    assert.deepEqual(patches[0].element.motion, { preset: "breathe", intensity: 0.8 });
+    // Byte-stability: non-layered element carries no layer key.
+    const plainId = addElement(state, {
+      type: "text",
+      content: { content: "plain", position: "c", style: "s" },
+      lifetime_s: null,
+    });
+    const plainPatches = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "addText", input: { content: "plain", position: "c", style: "s" } },
+      result: { element_id: plainId },
+    });
+    assert.equal("layer" in plainPatches[0].element, false);
+    assert.equal("motion" in plainPatches[0].element, false);
+  });
+
+  await t("autoFadeDurationForElement returns IMAGE_AUTO_FADE_DURATION_MS for image, fallback otherwise", async () => {
+    assert.equal(autoFadeDurationForElement({ type: "image" }), IMAGE_AUTO_FADE_DURATION_MS);
+    assert.equal(autoFadeDurationForElement({ type: "text" }), 400);
+    // Custom fallback is honored for non-image:
+    assert.equal(autoFadeDurationForElement({ type: "svg" }, 600), 600);
+  });
+
+  await t("sketch.add patch carries layer when the sketch slot has one", async () => {
+    const { addP5SketchSlot } = await import("./scene_state.mjs");
+    const state = freshState();
+    const result = addP5SketchSlot(state, {
+      position: "center", size: "medium", code: "noop()", audio_reactive: false,
+      layer: "midground",
+    });
+    const patches = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "addP5Sketch", input: { position: "center", size: "medium", code: "", audio_reactive: false } },
+      result,
+    });
+    const addPatch = patches.find((p) => p.type === "sketch.add");
+    assert.equal(addPatch.layer, "midground");
+    // Without layer, the patch stays shape-stable (no key):
+    const result2 = addP5SketchSlot(state, {
+      position: "bottom-right", size: "small", code: "", audio_reactive: false,
+    });
+    const patches2 = await emitPatchesForToolResult({
+      state,
+      toolUseBlock: { name: "addP5Sketch", input: { position: "bottom-right", size: "small", code: "", audio_reactive: false } },
+      result: result2,
+    });
+    const addPatch2 = patches2.find((p) => p.type === "sketch.add");
+    assert.equal("layer" in addPatch2, false);
   });
 
   await t("addImage emits browser_url when fetch succeeds", async () => {

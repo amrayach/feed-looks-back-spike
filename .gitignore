@@ -6,6 +6,8 @@ __pycache__/
 .mypy_cache/
 
 corpus/
+corpus_sample*/
+corpus_recording_*/
 audio/
 
 .DS_Store
@@ -40,3 +42,35 @@ pnpm-debug.log*
 playwright-report/
 .playwright-screenshots/
 test-results/
+
+# Codex / preflight artifacts (local-only)
+.codex
+.codex/
+node/.codex-preflight-write-check
+
+# Reference photos with unrecoverable provenance — kept locally for
+# bake-time iteration; excluded from the public repo for rights diligence.
+# NOTE: these are already tracked in earlier history; this pattern only
+# prevents future re-adds. Pre-publish action is to `git rm --cached` each
+# path so the next commit drops them from the index.
+node/canon/reference_photos/02_*.jpg
+node/canon/reference_photos/05_*.jpg
+node/canon/reference_photos/07_*.jpg
+node/canon/reference_photos/09_*.jpg
+node/canon/reference_photos/10_*.jpg
+node/canon/reference_photos/11_*.jpg
+node/canon/reference_photos/12_*.jpg
+
+# Internal handoff/log docs not intended for public review.
+# Patterns match at any depth so root + subdir handoffs are covered.
+SESSION_*_HANDOFF.md
+SESSION_*_DESIGN_HANDOFF.md
+SESSION_*_LOG.md
+PHASE_*_SESSION_HANDOFF.md
+docs/STATUS_FOR_BASHAR.md
+docs/COORDINATOR_SESSION_HANDOFF_*.md
+docs/SESSION_*.md
+docs/BAKE_MODE_HANDOFF_*.md
+docs/ULTRAREVIEW_*.md
+docs/2026-*-session-*.md
+docs/superpowers/

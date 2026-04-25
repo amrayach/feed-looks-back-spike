@@ -8,7 +8,8 @@
 // at all. Tell Opus what to DO (figurative motifs); never mention
 // what to avoid by name.
 //
-// Scope: node/prompts/hijaz_base.md + node/prompts/configs/*/tools.json.
+// Scope: node/prompts/bayati_base.md + node/prompts/configs/*/tools.json.
+// (Maqam shifted from Hijaz → Bayati 2026-04-25; feature names retained.)
 // Running: node node/src/prompts_aesthetic.mjs
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -37,7 +38,7 @@ export const FORBIDDEN_AESTHETIC_TERMS = [
   "perlin-noise",
 ];
 
-// At-least-one must appear in hijaz_base.md. Guards against an
+// At-least-one must appear in bayati_base.md. Guards against an
 // over-zealous scrub that strips every example and leaves nothing
 // concrete for Opus to pattern-match on.
 const REQUIRED_FIGURATIVE_MOTIFS = [
@@ -50,7 +51,7 @@ const REQUIRED_FIGURATIVE_MOTIFS = [
 ];
 
 function promptSources() {
-  const files = [join(PROMPTS_ROOT, "hijaz_base.md")];
+  const files = [join(PROMPTS_ROOT, "bayati_base.md")];
   const configsRoot = join(PROMPTS_ROOT, "configs");
   try {
     for (const cfg of readdirSync(configsRoot)) {
@@ -94,12 +95,12 @@ if (isDirectNodeExecution) {
     }
   });
 
-  t("at least one figurative motif appears in hijaz_base.md", () => {
-    const body = readFileSync(join(PROMPTS_ROOT, "hijaz_base.md"), "utf8");
+  t("at least one figurative motif appears in bayati_base.md", () => {
+    const body = readFileSync(join(PROMPTS_ROOT, "bayati_base.md"), "utf8");
     const hit = REQUIRED_FIGURATIVE_MOTIFS.find((re) => re.test(body));
     assert.ok(
       hit,
-      "hijaz_base.md has no figurative motif from the required list — prompt may have been over-scrubbed",
+      "bayati_base.md has no figurative motif from the required list — prompt may have been over-scrubbed",
     );
   });
 
@@ -118,7 +119,7 @@ if (isDirectNodeExecution) {
   });
 
   t("hijaz_state doc reflects exact-match gating (Fix 4), not threshold semantics", () => {
-    const body = readFileSync(join(PROMPTS_ROOT, "hijaz_base.md"), "utf8");
+    const body = readFileSync(join(PROMPTS_ROOT, "bayati_base.md"), "utf8");
     assert.ok(!/value\s*≥\s*3\s*maps to/i.test(body), "old threshold-semantics doc still present");
     assert.ok(/exact-match/i.test(body), "doc should describe collapsed map.in as exact-match");
   });

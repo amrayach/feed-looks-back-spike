@@ -1,0 +1,410 @@
+{
+  "track_id": "song 5wav_from_35s",
+  "duration_s": 152.41573696145124,
+  "cycle_count": 30,
+  "overall_arc": [
+    {
+      "act_index": 0,
+      "name": "Opening — single line of moonlight on still water",
+      "cycle_range": [
+        0,
+        3
+      ],
+      "intent": "Establish the room. A thin line of moonlight on dark water, a solitary silhouette appearing slowly, deep shadow palette. Place one durable anchor and let it hold."
+    },
+    {
+      "act_index": 1,
+      "name": "First ascent toward the pivot",
+      "cycle_range": [
+        4,
+        6
+      ],
+      "intent": "Energy builds stepwise. Warmth gathers — pale candlelight enters, an open palm appears in anticipation of the first tahwil. The line of moonlight widens."
+    },
+    {
+      "act_index": 2,
+      "name": "Pivot station — first muhayyar approach",
+      "cycle_range": [
+        7,
+        10
+      ],
+      "intent": "Tahwil at cycle 7. Composite scene — open palm in low candlelight, moonlight bloom, a single text fragment. Sustained on G; loose linen falls; quiet hold at cycle 10 with a single feather at rest."
+    },
+    {
+      "act_index": 3,
+      "name": "Climax — muhayyar arrival, fullest weight",
+      "cycle_range": [
+        11,
+        16
+      ],
+      "intent": "Re-ascent into peak intensity. Second tahwil at 13 brings the muhayyar — full-stage moonlight band, warm parchment wash, composite scene with image dominant. Elevation, not impact. Begin cooling palette at 16."
+    },
+    {
+      "act_index": 4,
+      "name": "Quiet pivot — back at the window",
+      "cycle_range": [
+        17,
+        22
+      ],
+      "intent": "Energy drops sharply. Third tahwil at 18 is paradoxically dark — back at a window at night, head bowed in shadow. Phrase break at 21 holds stillness; brief reanimation at 22 before settling."
+    },
+    {
+      "act_index": 5,
+      "name": "Final tableau — settling to D",
+      "cycle_range": [
+        23,
+        29
+      ],
+      "intent": "Phrase break at 23 contracts the scene. A single warm anchor holds. Gentle return through 'what stayed', solitary figure recedes, single feather drifts. Final phrase break at 29 leaves moonlight on water alone."
+    }
+  ],
+  "per_cycle_intent": [
+    {
+      "cycle": 0,
+      "active_act": 0,
+      "intent": "Open with a single thin line of moonlight on still water at center. Deep shadow background. Nothing else.",
+      "energy_hint": "low",
+      "snapshot_time_s": 5
+    },
+    {
+      "cycle": 1,
+      "active_act": 0,
+      "intent": "Place one short text fragment ('after' or 'alone in the room') in lower-left. The moonlight begins to breathe with hijaz_intensity.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 10
+    },
+    {
+      "cycle": 2,
+      "active_act": 0,
+      "intent": "A solitary figure silhouette enters the right edge — small, rooted. The line of moonlight extends slightly.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 15
+    },
+    {
+      "cycle": 3,
+      "active_act": 0,
+      "intent": "Head bowed in shadow joins as a quiet midground anchor. Hold; do not add. The room settles.",
+      "energy_hint": "falling",
+      "snapshot_time_s": 20
+    },
+    {
+      "cycle": 4,
+      "active_act": 1,
+      "intent": "Image: an open palm in low candlelight enters as a medium inset on the right. Plant the feather motif as a small SVG at upper-right for later payoff.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 25
+    },
+    {
+      "cycle": 5,
+      "active_act": 1,
+      "intent": "A second text fragment — 'before the light fades' — at upper-center. Warm parchment edges into the palette via setBackground.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 30
+    },
+    {
+      "cycle": 6,
+      "active_act": 1,
+      "intent": "Anticipate the pivot. Transform the moonlight line — slow scale to widen. The open palm warms (saturation up). Quiet ramp.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 35
+    },
+    {
+      "cycle": 7,
+      "active_act": 2,
+      "intent": "TAHWIL. Composite scene: open palm (large inset, breathe preset), warm bloom SVG, text 'a quiet rising'. Background shifts to warm radial-gradient. Elevation, not impact.",
+      "energy_hint": "high",
+      "snapshot_time_s": 40
+    },
+    {
+      "cycle": 8,
+      "active_act": 2,
+      "intent": "Sustained on G. Image of loose linen falling across a dark surface enters as a column or half-canvas. Moonlight line continues breathing.",
+      "energy_hint": "high",
+      "snapshot_time_s": 45
+    },
+    {
+      "cycle": 9,
+      "active_act": 2,
+      "intent": "p5 sketch: soft breath rising on cold glass, mid-left, small-medium, hijaz_intensity-driven. Floating on the upper jins.",
+      "energy_hint": "falling",
+      "snapshot_time_s": 50
+    },
+    {
+      "cycle": 10,
+      "active_act": 2,
+      "intent": "Quiet hold (silence_ratio 0.26, dark timbre). Fade the older text from cycle 1. Single feather SVG settles. No new placements beyond the fade.",
+      "energy_hint": "low",
+      "snapshot_time_s": 55
+    },
+    {
+      "cycle": 11,
+      "active_act": 3,
+      "intent": "Re-ascent. Add a slow ripple SVG (drift preset) horizontal-band-middle. Palette shifts warmer via paletteShift.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 60
+    },
+    {
+      "cycle": 12,
+      "active_act": 3,
+      "intent": "Building toward muhayyar. Text fragment 'the breath stayed' enters with typewriter animation. Anticipate climax.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 65
+    },
+    {
+      "cycle": 13,
+      "active_act": 3,
+      "intent": "TAHWIL — second pivot. Composite scene: full-bleed moonlight on water image, sustained warm horizon SVG with hijaz_tahwil impulse scale, text 'what the room held'. Background to warmer wash.",
+      "energy_hint": "high",
+      "snapshot_time_s": 70
+    },
+    {
+      "cycle": 14,
+      "active_act": 3,
+      "intent": "Muhayyar elevation. Transform the moonlight band — wider, brighter. Single soft pulseScene at 0.25 intensity in pale candlelight color. Held breath releasing.",
+      "energy_hint": "high",
+      "snapshot_time_s": 75
+    },
+    {
+      "cycle": 15,
+      "active_act": 3,
+      "intent": "Sustained peak (RMS 0.074, the absolute peak). Image dominant — head bowed in shadow at full bleed, breathe preset on hijaz_intensity. Hold the muhayyar.",
+      "energy_hint": "high",
+      "snapshot_time_s": 80
+    },
+    {
+      "cycle": 16,
+      "active_act": 3,
+      "intent": "Beginning to settle. Morph the warm bloom toward cooler slate. Fade older text. Palette begins cooling.",
+      "energy_hint": "falling",
+      "snapshot_time_s": 85
+    },
+    {
+      "cycle": 17,
+      "active_act": 4,
+      "intent": "Descent begins. Fade the climax composite group. Loose linen lingers; moonlight line returns to its earlier weight.",
+      "energy_hint": "falling",
+      "snapshot_time_s": 90
+    },
+    {
+      "cycle": 18,
+      "active_act": 4,
+      "intent": "TAHWIL paradox — quiet, dark timbre, very sparse. Image: back of someone at a window at night, half-canvas right. Background shifts to deep slate.",
+      "energy_hint": "low",
+      "snapshot_time_s": 95
+    },
+    {
+      "cycle": 19,
+      "active_act": 4,
+      "intent": "Solitary figure walking across a dark plain at dusk enters as medium inset. p5 breath-on-glass remains. Quiet pivot held.",
+      "energy_hint": "low",
+      "snapshot_time_s": 100
+    },
+    {
+      "cycle": 20,
+      "active_act": 4,
+      "intent": "Loose linen drifts (drift preset on existing element). Single feather settles via transformElement — slow rotation. No new images.",
+      "energy_hint": "low",
+      "snapshot_time_s": 105
+    },
+    {
+      "cycle": 21,
+      "active_act": 4,
+      "intent": "PHRASE BREAK. Hold completely. Fade one aging element (the warm horizon SVG from earlier). Stillness as composition.",
+      "energy_hint": "low",
+      "snapshot_time_s": 110
+    },
+    {
+      "cycle": 22,
+      "active_act": 4,
+      "intent": "Brief reanimation — moonlight line breathes once. textAnimate the 'what the room held' fragment with wordByWord. Hold.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 115
+    },
+    {
+      "cycle": 23,
+      "active_act": 5,
+      "intent": "PHRASE BREAK at 120s. Contract. Fade the cycle-19 figure image. Single warm anchor remains — open palm or moonlight.",
+      "energy_hint": "low",
+      "snapshot_time_s": 120
+    },
+    {
+      "cycle": 24,
+      "active_act": 5,
+      "intent": "Held quiet on G. No new placements. Allow the always-on shader bed to carry the room.",
+      "energy_hint": "low",
+      "snapshot_time_s": 125
+    },
+    {
+      "cycle": 25,
+      "active_act": 5,
+      "intent": "Gentle return. Text fragment 'what stayed' enters lower-center, serif, small. Echo of the opening palette.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 130
+    },
+    {
+      "cycle": 26,
+      "active_act": 5,
+      "intent": "Soft warmth recovers. paletteShift back toward warm parchment, slow duration. The room remembers the muhayyar.",
+      "energy_hint": "rising",
+      "snapshot_time_s": 135
+    },
+    {
+      "cycle": 27,
+      "active_act": 5,
+      "intent": "Descent toward tonic. Single feather payoff — drift preset activates fully, the feather settles toward bottom-center. Head bowed remains.",
+      "energy_hint": "falling",
+      "snapshot_time_s": 140
+    },
+    {
+      "cycle": 28,
+      "active_act": 5,
+      "intent": "Deepening dusk. Fade non-essential. Final composite preparation: moonlight + feather + 'what stayed' is the tableau.",
+      "energy_hint": "falling",
+      "snapshot_time_s": 145
+    },
+    {
+      "cycle": 29,
+      "active_act": 5,
+      "intent": "PHRASE BREAK and silence (0.67 ratio). No new placements. Fade everything except the moonlight on water and one text fragment. Final tableau.",
+      "energy_hint": "low",
+      "snapshot_time_s": 150
+    }
+  ],
+  "element_vocabulary": {
+    "anchors": [
+      "thin line of moonlight on still water",
+      "open palm in low candlelight",
+      "solitary figure walking across a dark plain at dusk",
+      "head bowed in shadow",
+      "loose linen falling across a dark surface",
+      "single feather on dark cloth",
+      "back of someone at a window at night",
+      "breath rising on cold glass"
+    ],
+    "palette_progression": [
+      {
+        "cycle_range": [
+          0,
+          3
+        ],
+        "palette": "deep shadow #2a1f14 with slate-blue moonlight #4a6670 and pale candlelight #f5e6c8 accents"
+      },
+      {
+        "cycle_range": [
+          4,
+          6
+        ],
+        "palette": "warming — sand gold #d4a574 entering, deep shadow holding, pale candlelight on the palm"
+      },
+      {
+        "cycle_range": [
+          7,
+          12
+        ],
+        "palette": "warm parchment #e8d4a0 and burnt ochre #c4894a, the room widened on the pivot"
+      },
+      {
+        "cycle_range": [
+          13,
+          16
+        ],
+        "palette": "fullest warmth — burnt ochre #c4894a and deep terracotta #8b4a2a, pale candlelight halo at muhayyar"
+      },
+      {
+        "cycle_range": [
+          17,
+          22
+        ],
+        "palette": "cooling back to slate-blue #4a6670 and muted steel #8a9ba0, deep shadow returning"
+      },
+      {
+        "cycle_range": [
+          23,
+          29
+        ],
+        "palette": "deep shadow #2a1f14 dominant, a single warm anchor of sand gold #d4a574, settling to moonlight only"
+      }
+    ],
+    "introduce_at": {
+      "thin line of moonlight on still water": 0,
+      "solitary silhouette": 2,
+      "head bowed in shadow": 3,
+      "open palm in low candlelight": 4,
+      "single feather (planted)": 4,
+      "warm bloom / pivot composite": 7,
+      "loose linen falling": 8,
+      "breath on cold glass (p5)": 9,
+      "slow ripple band": 11,
+      "muhayyar moonlight at full bleed": 13,
+      "back at window at night": 18,
+      "solitary figure at dusk (image)": 19,
+      "what stayed (final text)": 25
+    },
+    "retire_at": {
+      "early opening text ('after')": 10,
+      "warm bloom / pivot composite": 16,
+      "climax full-bleed moonlight": 17,
+      "warm horizon SVG": 21,
+      "solitary figure at dusk (image)": 23,
+      "loose linen falling": 26,
+      "p5 breath on glass": 27,
+      "head bowed in shadow": 28,
+      "all non-tableau elements": 29
+    }
+  },
+  "foreshadow_pairs": [
+    {
+      "plant_at": 0,
+      "pay_off_at": 13,
+      "note": "Thin line of moonlight planted in opening blooms into full-bleed muhayyar moonlight at second tahwil."
+    },
+    {
+      "plant_at": 4,
+      "pay_off_at": 27,
+      "note": "Single feather planted at first ascent drifts and settles in the descent toward tonic."
+    },
+    {
+      "plant_at": 4,
+      "pay_off_at": 7,
+      "note": "Open palm anticipates the first tahwil; arrives in the composite at cycle 7."
+    },
+    {
+      "plant_at": 9,
+      "pay_off_at": 22,
+      "note": "Breath on glass p5 sketch establishes the breath motif; reanimates briefly before final phrase break."
+    },
+    {
+      "plant_at": 12,
+      "pay_off_at": 14,
+      "note": "'The breath stayed' text typewriter-revealed before muhayyar — reads as the held breath of the climax."
+    },
+    {
+      "plant_at": 5,
+      "pay_off_at": 25,
+      "note": "'Before the light fades' text echoes in 'what stayed' at the final settling — testimonial accumulation."
+    },
+    {
+      "plant_at": 0,
+      "pay_off_at": 29,
+      "note": "The opening line of moonlight is the only element left in the final tableau — the room ends as it began."
+    }
+  ],
+  "anticipation_offsets_ms": {
+    "6": -300,
+    "7": -350,
+    "12": -300,
+    "13": -400,
+    "14": -350,
+    "15": -200,
+    "17": -250,
+    "18": -300,
+    "21": -250,
+    "22": -200,
+    "23": -250,
+    "27": -200,
+    "29": -300
+  },
+  "model": "claude-opus-4-7",
+  "thinking_budget": 8000,
+  "baked_at": "2025-01-15T00:00:00Z"
+}

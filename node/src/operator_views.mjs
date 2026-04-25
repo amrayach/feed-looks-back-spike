@@ -102,7 +102,7 @@ function renderImageInScene(element, currentElapsedS) {
     const creditHref = escapeAttr(asset.attribution?.photo_url ?? "");
     const creditName = escapeHtml(asset.attribution?.photographer_name ?? "Unknown");
     const credit = asset.attribution?.photographer_name
-      ? `<div style="position: absolute; right: 8px; bottom: 6px; padding: 3px 6px; background: rgba(10,10,13,0.72); color: #f5f0e8; font: 0.68rem/1.2 Georgia, serif; border-radius: 2px; max-width: 78%; text-align: right;">Photo by <a href="${creditHref}" target="_blank" rel="noreferrer noopener" style="color: #f5f0e8; text-decoration: underline;">${creditName}</a></div>`
+      ? `<div style="position: absolute; right: 8px; bottom: 6px; padding: 0; background: transparent; color: rgba(245,240,232,0.34); font: 0.62rem/1.2 Georgia, serif; max-width: 78%; text-align: right; text-shadow: 0 1px 6px rgba(0,0,0,0.3);">Photo by <a href="${creditHref}" target="_blank" rel="noreferrer noopener" style="color: rgba(245,240,232,0.34); text-decoration: underline;">${creditName}</a></div>`
       : "";
     return (
       `    <div class="scene-element image-element" ` +
@@ -112,9 +112,9 @@ function renderImageInScene(element, currentElapsedS) {
       `data-created-at-cycle="${escapeAttr(element?.created_at_cycle)}" ` +
       `style="position: absolute; ${posCss} opacity: ${opacity}; z-index: ${dim.z}; ` +
       `width: ${dim.width}; height: ${dim.height}; overflow: hidden; border: ${dim.border}; ` +
-      `background: rgba(20,16,13,0.72); box-shadow: ${dim.shadow};">` +
+      `border-radius: ${dim.radius ?? "8px"}; background: transparent; box-shadow: ${dim.shadow};">` +
       `<img src="${escapeAttr(asset.src)}" alt="${escapeAttr(content.query ?? "Unsplash image")}" ` +
-      `style="display: block; width: 100%; height: 100%; object-fit: cover; filter: saturate(0.92) brightness(0.97);"/>` +
+      `style="display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0.74; mix-blend-mode: screen; filter: saturate(0.86) brightness(1.14) contrast(0.82); mask-image: radial-gradient(ellipse at center, #000 0%, #000 48%, rgba(0,0,0,0.72) 64%, transparent 100%); -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, #000 48%, rgba(0,0,0,0.72) 64%, transparent 100%);"/>` +
       credit +
       `</div>`
     );
@@ -123,11 +123,11 @@ function renderImageInScene(element, currentElapsedS) {
     `    <div class="scene-element image-placeholder" ` +
     `data-element-id="${escapeAttr(element?.element_id)}" ` +
     `data-position="${escapeAttr(position)}" ` +
-    `data-size-class="${escapeAttr(imageSizeClass(position))}" ` +
-    `data-created-at-cycle="${escapeAttr(element?.created_at_cycle)}" ` +
-    `style="position: absolute; ${posCss} opacity: ${opacity}; z-index: ${dim.z}; ` +
-    `width: ${dim.width}; height: ${dim.height}; border: 1px dashed #8a7e6a; ` +
-    `background: rgba(40,32,26,0.4); color: #d9cbb2; ` +
+      `data-size-class="${escapeAttr(imageSizeClass(position))}" ` +
+      `data-created-at-cycle="${escapeAttr(element?.created_at_cycle)}" ` +
+      `style="position: absolute; ${posCss} opacity: ${opacity}; z-index: ${dim.z}; ` +
+    `width: ${dim.width}; height: ${dim.height}; border: 0; ` +
+    `border-radius: ${dim.radius ?? "8px"}; background: transparent; color: rgba(234,221,228,0.36); ` +
     `display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; ` +
     `font: 0.85rem/1.2 Georgia, serif;">` +
     `<span>query=&ldquo;${query}&rdquo;</span>` +

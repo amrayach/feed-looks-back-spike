@@ -42,6 +42,61 @@ function jsonScriptEscape(str) {
     .replace(/\u2029/g, "\\u2029");
 }
 
+function readRequestBody(req, maxBytes = 64 * 1024) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > maxBytes) {
+        rejectPromise(new Error("request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => resolvePromise(body));
+    req.on("error", rejectPromise);
+  });
+}
+
+function formatP5TerminalLog(payload, currentContext) {
+  const level = String(payload?.level ?? "info").slice(0, 16);
+  const event = String(payload?.event ?? "log").slice(0, 48);
+  const runId = String(payload?.run_id ?? currentContext?.runId ?? "?").slice(0, 80);
+  const sketchId = String(payload?.sketch_id ?? "-").slice(0, 80);
+  const message = String(payload?.message ?? "").replace(/\s+/g, " ").slice(0, 1000);
+  const codeChars = Number.isFinite(payload?.code_chars) ? ` code_chars=${payload.code_chars}` : "";
+  return `[p5 ${level}] run=${runId} sketch=${sketchId} event=${event}${codeChars}${message ? ` ${message}` : ""}\n`;
+}
+
+function p5PatchLogPayload(patch) {
+  if (patch?.type === "sketch.add") {
+    return {
+      level: "info",
+      event: patch.type,
+      sketch_id: patch.sketch_id,
+      code_chars: typeof patch.code === "string" ? patch.code.length : 0,
+      message: `${patch.position ?? "unknown"} ${patch.size ?? "unknown"} audio_reactive=${Boolean(patch.audio_reactive)}`,
+    };
+  }
+  if (patch?.type === "sketch.background.set") {
+    return {
+      level: "info",
+      event: patch.type,
+      sketch_id: patch.sketch_id,
+      code_chars: typeof patch.code === "string" ? patch.code.length : 0,
+      message: `background audio_reactive=${Boolean(patch.audio_reactive)}`,
+    };
+  }
+  if (patch?.type === "sketch.retire") {
+    return {
+      level: "info",
+      event: patch.type,
+      sketch_id: patch.sketch_id,
+    };
+  }
+  return null;
+}
+
 function sandboxHtml({ codeJson }) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -68,6 +123,8 @@ function contentTypeFor(filePath) {
     case ".mjs":
     case ".js":
       return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
     case ".json":
       return "application/json; charset=utf-8";
     case ".wav":
@@ -86,6 +143,61 @@ function contentTypeFor(filePath) {
   }
 }
 
+function parseByteRange(rangeHeader, size) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader ?? ""));
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (!rawStart && !rawEnd) return null;
+
+  let start;
+  let end;
+  if (!rawStart) {
+    const suffixLength = Number(rawEnd);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return null;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd ? Number(rawEnd) : size - 1;
+  }
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  if (start < 0 || end < start || start >= size) return { unsatisfiable: true };
+  return { start, end: Math.min(end, size - 1) };
+}
+
+function sendFile(req, res, filePath) {
+  const body = readFileSync(filePath);
+  const baseHeaders = {
+    "content-type": contentTypeFor(filePath),
+    "cache-control": "no-store",
+    "accept-ranges": "bytes",
+  };
+  const range = parseByteRange(req.headers.range, body.byteLength);
+  if (range?.unsatisfiable) {
+    res.writeHead(416, {
+      ...baseHeaders,
+      "content-range": `bytes */${body.byteLength}`,
+    });
+    res.end();
+    return;
+  }
+  if (range) {
+    const chunk = body.subarray(range.start, range.end + 1);
+    res.writeHead(206, {
+      ...baseHeaders,
+      "content-length": chunk.byteLength,
+      "content-range": `bytes ${range.start}-${range.end}/${body.byteLength}`,
+    });
+    res.end(chunk);
+    return;
+  }
+  res.writeHead(200, {
+    ...baseHeaders,
+    "content-length": body.byteLength,
+  });
+  res.end(body);
+}
+
 function safeResolve(rootDir, relativePath) {
   const resolvedRoot = resolve(rootDir);
   const filePath = resolve(resolvedRoot, relativePath);
@@ -102,10 +214,15 @@ function makeOperatorUrl({ host, port, runId, mode }) {
   return `http://${host}:${port}/?run_id=${encodeURIComponent(runId)}&mode=${encodeURIComponent(mode)}`;
 }
 
+function makeShowUrl({ host, port, runId, mode }) {
+  return `http://${host}:${port}/show?run_id=${encodeURIComponent(runId)}&mode=${encodeURIComponent(mode)}`;
+}
+
 export async function createStageServer({
   host = "127.0.0.1",
   port = 0,
   nodeRoot = DEFAULT_NODE_ROOT,
+  p5LogWriter = null,
 } = {}) {
   const browserRoot = join(nodeRoot, "browser");
   const srcRoot = join(nodeRoot, "src");
@@ -148,6 +265,24 @@ export async function createStageServer({
     res.end(html);
   }
 
+  async function serveP5Log(req, res) {
+    if (req.method !== "POST") {
+      res.writeHead(405, { "content-type": "text/plain; charset=utf-8" });
+      res.end("method not allowed");
+      return;
+    }
+    try {
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      p5LogWriter?.write?.(formatP5TerminalLog(payload, currentContext));
+      res.writeHead(204, { "cache-control": "no-store" });
+      res.end();
+    } catch (err) {
+      res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      res.end(`bad p5 log: ${err?.message ?? err}`);
+    }
+  }
+
   const server = createServer((req, res) => {
     try {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -155,11 +290,26 @@ export async function createStageServer({
         serveSandboxHtml(res, url);
         return;
       }
+      if (url.pathname === "/p5/log") {
+        void serveP5Log(req, res);
+        return;
+      }
 
       let filePath = null;
 
       if (url.pathname === "/") {
         filePath = join(browserRoot, "stage.html");
+      } else if (url.pathname === "/show") {
+        // Audience display: same-origin composition of the live stage and
+        // command HUD. The iframes preserve each runtime's existing WS path.
+        filePath = join(browserRoot, "show.html");
+      } else if (url.pathname === "/hud") {
+        // Code-stream HUD. Loads the feed UI; the page itself reads
+        // ?run_id=...&mode=posthoc|live and pulls data either from
+        // /run/<id>/run_summary.json (posthoc) or the stage WebSocket
+        // (live). Served from the same origin as stage.html so the HUD
+        // has no new cross-origin or permissions surface.
+        filePath = join(browserRoot, "hud.html");
       } else if (url.pathname === "/p5/bridge.js") {
         filePath = join(browserRoot, "p5_bridge.js");
       } else if (url.pathname.startsWith("/browser/")) {
@@ -180,7 +330,7 @@ export async function createStageServer({
         // the contract — see node/vendor/p5/README.md for refresh steps.
         filePath = join(nodeRoot, "vendor", "p5", "p5.min.js");
       } else {
-        const runMatch = /^\/run\/([^/]+)\/(audio\.wav|features_track\.json)$/.exec(url.pathname);
+        const runMatch = /^\/run\/([^/]+)\/(audio\.wav|features_track\.json|run_summary\.json)$/.exec(url.pathname);
         if (runMatch) {
           filePath = join(outputRoot, `run_${runMatch[1]}`, runMatch[2]);
         } else if (url.pathname.startsWith("/image_cache/")) {
@@ -194,12 +344,7 @@ export async function createStageServer({
         return;
       }
 
-      const body = readFileSync(filePath);
-      res.writeHead(200, {
-        "content-type": contentTypeFor(filePath),
-        "cache-control": "no-store",
-      });
-      res.end(body);
+      sendFile(req, res, filePath);
     } catch (err) {
       res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
       res.end(`server error: ${err?.message ?? err}`);
@@ -333,6 +478,10 @@ export async function createStageServer({
       return makeOperatorUrl({ host, port: boundPort, runId, mode });
     },
 
+    getShowUrl({ runId, mode }) {
+      return makeShowUrl({ host, port: boundPort, runId, mode });
+    },
+
     async setCurrentRunContext({ runId, mode, runDir }) {
       currentContext = { runId, mode, runDir };
       patchCache = createPatchCache({ persistPath: join(runDir, "patch_cache.json") });
@@ -373,6 +522,8 @@ export async function createStageServer({
       } else if (patch?.type === "sketch.retire" && typeof patch.sketch_id === "string") {
         sketchCodes.delete(patch.sketch_id);
       }
+      const p5Log = p5PatchLogPayload(patch);
+      if (p5Log) p5LogWriter?.write?.(formatP5TerminalLog(p5Log, currentContext));
       await patchCache.apply(patch);
       for (const [ws, meta] of clientMeta.entries()) {
         if (!meta.accepted || meta.role !== "operator" || meta.runId !== currentContext.runId) continue;
@@ -433,9 +584,9 @@ if (isDirectNodeExecution) {
     writeFileSync(path, content);
   }
 
-  function requestText(url) {
+  function requestText(url, headers = {}) {
     return new Promise((resolvePromise, rejectPromise) => {
-      http.get(url, (res) => {
+      http.get(url, { headers }, (res) => {
         let body = "";
         res.setEncoding("utf8");
         res.on("data", (chunk) => {
@@ -445,6 +596,35 @@ if (isDirectNodeExecution) {
           resolvePromise({ status: res.statusCode, body, headers: res.headers }),
         );
       }).on("error", rejectPromise);
+    });
+  }
+
+  function postJson(url, payload) {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const body = JSON.stringify(payload);
+      const parsed = new URL(url);
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: `${parsed.pathname}${parsed.search}`,
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "content-length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          let responseBody = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => { responseBody += chunk; });
+          res.on("end", () =>
+            resolvePromise({ status: res.statusCode, body: responseBody, headers: res.headers }),
+          );
+        },
+      );
+      req.on("error", rejectPromise);
+      req.end(body);
     });
   }
 
@@ -463,6 +643,11 @@ if (isDirectNodeExecution) {
   function freshNodeRoot(prefix) {
     const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
     write(join(root, "browser", "stage.html"), "<!doctype html><html><body>stage</body></html>");
+    write(join(root, "browser", "show.html"), "<!doctype html><html><body>show FLB_SHOW_MARKER</body></html>");
+    write(join(root, "browser", "hud.html"), "<!doctype html><html><body>hud FLB_HUD_MARKER</body></html>");
+    write(join(root, "browser", "hud.css"), "/* FLB_HUD_CSS_MARKER */\n");
+    write(join(root, "browser", "hud.mjs"), "// FLB_HUD_JS_MARKER\n");
+    write(join(root, "browser", "hud_parser.mjs"), "export const hud = true;\n");
     write(join(root, "browser", "bootstrap.mjs"), "export const ok = true;\n");
     write(join(root, "browser", "p5_bridge.js"), "// fake p5_bridge.js content — FLB_BRIDGE_MARKER\n");
     write(join(root, "src", "patch_protocol.mjs"), "export const ok = true;\n");
@@ -481,6 +666,7 @@ if (isDirectNodeExecution) {
     const server = await createStageServer({ nodeRoot });
     try {
       const stage = await requestText(`http://${server.host}:${server.port}/`);
+      const show = await requestText(`http://${server.host}:${server.port}/show`);
       const shared = await requestText(`http://${server.host}:${server.port}/shared/patch_protocol.mjs`);
       const layout = await requestText(`http://${server.host}:${server.port}/shared/scene_layout.mjs`);
       const easing = await requestText(`http://${server.host}:${server.port}/shared/binding_easing.mjs`);
@@ -489,6 +675,8 @@ if (isDirectNodeExecution) {
       const forbidden = await requestText(`http://${server.host}:${server.port}/shared/not_allowed.mjs`);
       assert.equal(stage.status, 200);
       assert.match(stage.body, /stage/);
+      assert.equal(show.status, 200);
+      assert.match(show.body, /FLB_SHOW_MARKER/);
       assert.equal(shared.status, 200);
       assert.equal(layout.status, 200);
       assert.equal(easing.status, 200);
@@ -502,6 +690,31 @@ if (isDirectNodeExecution) {
       // node_modules, this test flips red.)
       assert.match(p5src.body, /VENDORED P5 MARKER/, "p5.min.js is not served from node/vendor/p5/");
       assert.equal(forbidden.status, 404);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("serves static files with content length and byte ranges", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-ranges");
+    const runDir = join(nodeRoot, "output", "run_ranges");
+    mkdirSync(runDir, { recursive: true });
+    write(join(runDir, "audio.wav"), "0123456789");
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "ranges", mode: "live", runDir });
+      const url = `http://${server.host}:${server.port}/run/ranges/audio.wav`;
+      const full = await requestText(url);
+      assert.equal(full.status, 200);
+      assert.equal(full.headers["content-length"], "10");
+      assert.equal(full.headers["accept-ranges"], "bytes");
+      assert.equal(full.body, "0123456789");
+
+      const part = await requestText(url, { range: "bytes=2-5" });
+      assert.equal(part.status, 206);
+      assert.equal(part.headers["content-range"], "bytes 2-5/10");
+      assert.equal(part.headers["content-length"], "4");
+      assert.equal(part.body, "2345");
     } finally {
       await server.close();
     }
@@ -715,6 +928,74 @@ if (isDirectNodeExecution) {
     }
   });
 
+  await t("/p5/log writes a compact terminal line", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-log");
+    const writes = [];
+    const server = await createStageServer({
+      nodeRoot,
+      p5LogWriter: { write: (line) => writes.push(line) },
+    });
+    try {
+      await server.setCurrentRunContext({
+        runId: "p5log",
+        mode: "precompute",
+        runDir: join(nodeRoot, "output", "run_p5log"),
+      });
+      const res = await postJson(`http://${server.host}:${server.port}/p5/log`, {
+        level: "warn",
+        event: "console",
+        sketch_id: "sketch_123",
+        message: "lamp flicker",
+      });
+      assert.equal(res.status, 204);
+      assert.equal(writes.length, 1);
+      assert.match(writes[0], /\[p5 warn\]/);
+      assert.match(writes[0], /run=p5log/);
+      assert.match(writes[0], /sketch=sketch_123/);
+      assert.match(writes[0], /lamp flicker/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("sketch patches write compact terminal lifecycle lines", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-p5-patch-log");
+    const runDir = join(nodeRoot, "output", "run_p5patch");
+    mkdirSync(runDir, { recursive: true });
+    const writes = [];
+    const server = await createStageServer({
+      nodeRoot,
+      p5LogWriter: { write: (line) => writes.push(line) },
+    });
+    try {
+      await server.setCurrentRunContext({
+        runId: "p5patch",
+        mode: "precompute",
+        runDir,
+      });
+      await server.broadcastPatch({
+        type: "sketch.add",
+        sketch_id: "sketch_patch_1",
+        position: "center",
+        size: "medium",
+        code: "draw()",
+        audio_reactive: true,
+        lifetime_s: null,
+      });
+      await server.broadcastPatch({ type: "sketch.retire", sketch_id: "sketch_patch_1" });
+      assert.equal(writes.length, 2);
+      assert.match(writes[0], /\[p5 info\]/);
+      assert.match(writes[0], /run=p5patch/);
+      assert.match(writes[0], /sketch=sketch_patch_1/);
+      assert.match(writes[0], /event=sketch\.add/);
+      assert.match(writes[0], /code_chars=6/);
+      assert.match(writes[0], /center medium audio_reactive=true/);
+      assert.match(writes[1], /event=sketch\.retire/);
+    } finally {
+      await server.close();
+    }
+  });
+
   await t("setCurrentRunContext clears the per-run sketchCodes registry", async () => {
     const nodeRoot = freshNodeRoot("flb-stage-server-p5-clear");
     const runDir = join(nodeRoot, "output", "run_clear1");
@@ -759,6 +1040,7 @@ if (isDirectNodeExecution) {
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "feature_bus.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "feature_replayer.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "binding_engine.mjs"));
+    importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "audio_visual_layer.mjs"));
     importModuleWithoutProcess(join(DEFAULT_NODE_ROOT, "browser", "p5_sandbox.mjs"));
   });
 
@@ -1034,6 +1316,59 @@ if (isDirectNodeExecution) {
       assert.equal(parsed.frames.length, 2);
       assert.equal(parsed.frames[1].hijaz_state, "approach");
       assert.equal(parsed.frames[1].hijaz_tahwil, true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await t("/hud serves the HUD shell and /run/<id>/run_summary.json is exposed", async () => {
+    const nodeRoot = freshNodeRoot("flb-stage-server-hud");
+    const runDir = join(nodeRoot, "output", "run_hudtest");
+    mkdirSync(runDir, { recursive: true });
+    // The HUD route is the only route that exposes run_summary.json to
+    // the browser. If this test breaks, the post-hoc replay path is broken.
+    const fakeSummary = {
+      run_id: "hudtest",
+      config: "config_a",
+      model: "claude-opus-4-7",
+      mode: "precompute",
+      cycles_total: 1,
+      per_cycle: [
+        {
+          cycle_index: 0,
+          cycle_id: "cycle_000",
+          elapsed_s: 0.5,
+          status: "ok",
+          tool_calls: [{ name: "setBackground", input: { css_background: "#000" } }],
+        },
+      ],
+    };
+    write(join(runDir, "run_summary.json"), JSON.stringify(fakeSummary));
+    const server = await createStageServer({ nodeRoot });
+    try {
+      await server.setCurrentRunContext({ runId: "hudtest", mode: "precompute", runDir });
+      const hud = await requestText(`http://${server.host}:${server.port}/hud`);
+      const hudJs = await requestText(`http://${server.host}:${server.port}/browser/hud.mjs`);
+      const hudCss = await requestText(`http://${server.host}:${server.port}/browser/hud.css`);
+      const summary = await requestText(
+        `http://${server.host}:${server.port}/run/hudtest/run_summary.json`,
+      );
+      assert.equal(hud.status, 200);
+      assert.match(hud.body, /FLB_HUD_MARKER/);
+      assert.equal(hudJs.status, 200);
+      assert.match(hudJs.body, /FLB_HUD_JS_MARKER/);
+      assert.match(hudJs.headers["content-type"] ?? "", /javascript/);
+      assert.equal(hudCss.status, 200);
+      assert.match(hudCss.body, /FLB_HUD_CSS_MARKER/);
+      // Guard against regressing to octet-stream — browsers refuse a
+      // stylesheet without a text/css content-type, which silently
+      // flattens the HUD to Times New Roman on a white background.
+      assert.match(hudCss.headers["content-type"] ?? "", /text\/css/);
+      assert.equal(summary.status, 200);
+      assert.match(summary.headers["content-type"] ?? "", /json/);
+      const parsed = JSON.parse(summary.body);
+      assert.equal(parsed.run_id, "hudtest");
+      assert.equal(parsed.per_cycle[0].tool_calls[0].name, "setBackground");
     } finally {
       await server.close();
     }

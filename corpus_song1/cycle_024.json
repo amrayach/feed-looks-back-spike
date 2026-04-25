@@ -1,0 +1,53 @@
+{
+  "cycle_id": "cycle_024",
+  "cycle_index": 24,
+  "source_file": "song 1.wav",
+  "snapshot_time_s": 125.0,
+  "elapsed_total_s": 125.0,
+  "window_duration_s": 4.0,
+  "window_start_s": 121.0,
+  "window_end_s": 125.0,
+  "block_1_scalars": {
+    "rms_mean": 0.028,
+    "rms_peak": 0.047,
+    "rms_trend": "falling",
+    "centroid_mean_hz": 1052,
+    "centroid_trend": "falling",
+    "onset_density": 13.25,
+    "onset_peak_strength": 2.457,
+    "pitch_class_dominant": "C#",
+    "pitch_class_secondary": "A",
+    "silence_ratio": 0.0,
+    "window_duration_s": 4.0,
+    "elapsed_total_s": 125.0
+  },
+  "block_2_summary": "Quiet, falling. Balanced timbre. Moderate articulation. Tonal center C# with secondary emphasis on A. Deep into the performance.",
+  "block_3_sparklines": {
+    "rms": "█▆▆▆▃▃█▆▄▂▅▇▆▄▃▂▁▃▂▃",
+    "onset": "▅▆█▅▂▄▄▆▇▂▇▅▄▅▁▂▃▇▄▅",
+    "centroid": "▆█▆▇▇▆▄▄▅▄▃▂▁▂▂▁▂▃▂▂"
+  },
+  "_debug": {
+    "file_percentiles": {
+      "rms_p10": 0.02563959378749132,
+      "rms_p33": 0.033739441111683845,
+      "rms_p66": 0.04280421271920204,
+      "rms_p90": 0.05437399782240391,
+      "centroid_p10": 756.4468898460249,
+      "centroid_p33": 935.4961469883273,
+      "centroid_p66": 1127.5799252554436,
+      "centroid_p90": 1317.880966977175,
+      "onset_density_p10": 12.65,
+      "onset_density_p33": 13.0,
+      "onset_density_p66": 14.0,
+      "onset_density_p90": 15.100000000000001,
+      "onset_strength_p90": 1.0940618276596068
+    },
+    "rms_std": 0.010924149827976036,
+    "centroid_std": 216.9330598554314,
+    "silence_threshold": 0.01281979689374566,
+    "onset_peak_threshold": 0.5470309138298034,
+    "rms_normalized_slope": -0.9765233848740791,
+    "centroid_normalized_slope": -2.1775129898147694
+  }
+}

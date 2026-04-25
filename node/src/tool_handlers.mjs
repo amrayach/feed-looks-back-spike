@@ -8,7 +8,17 @@ import {
   DEFAULT_LIFETIMES,
 } from "./scene_state.mjs";
 import { emitPatchesForToolResult } from "./patch_emitter.mjs";
-import { ReactivitySchema } from "./patch_protocol.mjs";
+import {
+  ReactivitySchema,
+  MotionSchema,
+  LAYER_TOKENS,
+  TransformSpecSchema,
+  PaletteTargetSchema,
+  MorphTargetSchema,
+  TEXT_ANIMATE_EFFECTS,
+} from "./patch_protocol.mjs";
+
+const TEXT_ANIMATE_EFFECT_SET = new Set(TEXT_ANIMATE_EFFECTS);
 
 const VALID_P5_POSITIONS = new Set([
   "top-left", "top-center", "top-right",
@@ -41,6 +51,37 @@ function validateReactivity(raw) {
   return { ok: true, normalized };
 }
 
+// v6.2: validate an optional layer string against LAYER_TOKENS. null /
+// undefined → { ok, normalized: null } (meaning "use the per-type
+// default"). Unknown tokens return an error so an LLM typo fails
+// loudly rather than silently routing the element to the default band.
+function validateLayer(raw) {
+  if (raw === undefined || raw === null) return { ok: true, normalized: null };
+  if (typeof raw !== "string" || !LAYER_TOKENS.includes(raw)) {
+    return { error: `layer '${raw}' is not one of ${LAYER_TOKENS.join(", ")}` };
+  }
+  return { ok: true, normalized: raw };
+}
+
+// v6.2: validate an optional motion preset. A missing motion is legal
+// (the element simply has no kernel attached). Delegates to the strict
+// Zod schema so extras / Infinity / negative intensities reject here
+// rather than at patch-ingress time.
+function validateMotion(raw) {
+  if (raw === undefined || raw === null) return { ok: true, normalized: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { error: "motion must be an object" };
+  }
+  const parsed = MotionSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `motion invalid: ${issues}` };
+  }
+  return { ok: true, normalized: parsed.data };
+}
+
 function requireString(input, field) {
   const v = input[field];
   if (v === undefined || v === null) {
@@ -59,11 +100,17 @@ function handleAddText(state, input) {
   }
   const reactivity = validateReactivity(input.reactivity);
   if (reactivity.error) return { error: reactivity.error };
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
+  const motion = validateMotion(input.motion);
+  if (motion.error) return { error: motion.error };
   const id = addElement(state, {
     type: "text",
     content: { content: input.content, position: input.position, style: input.style },
     lifetime_s: input.lifetime_s ?? null,
     reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
   });
   return { element_id: id };
 }
@@ -75,6 +122,10 @@ function handleAddSVG(state, input) {
   }
   const reactivity = validateReactivity(input.reactivity);
   if (reactivity.error) return { error: reactivity.error };
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
+  const motion = validateMotion(input.motion);
+  if (motion.error) return { error: motion.error };
   const id = addElement(state, {
     type: "svg",
     content: {
@@ -84,6 +135,8 @@ function handleAddSVG(state, input) {
     },
     lifetime_s: input.lifetime_s,
     reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
   });
   return { element_id: id };
 }
@@ -95,11 +148,25 @@ function handleAddImage(state, input) {
   }
   const reactivity = validateReactivity(input.reactivity);
   if (reactivity.error) return { error: reactivity.error };
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
+  const motion = validateMotion(input.motion);
+  if (motion.error) return { error: motion.error };
+  // Images default to the TTL path (scene_state honors DEFAULT_LIFETIMES.image).
+  // Treat explicit null the same as omission here: live runs should not get
+  // stuck on one permanent search result. Numeric values still override TTL.
+  //
+  // Preserve `undefined` (sentinel for "use the default") so scene_state
+  // can apply DEFAULT_LIFETIMES[type]. Previously this handler collapsed
+  // `undefined` to `null`, forcing the image permanent and bypassing the
+  // new default TTL.
   const id = addElement(state, {
     type: "image",
     content: { query: input.query, position: input.position },
-    lifetime_s: input.lifetime_s ?? null,
+    lifetime_s: input.lifetime_s === null ? undefined : input.lifetime_s,
     reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
   });
   return { element_id: id };
 }
@@ -148,12 +215,15 @@ function handleAddP5Sketch(state, input) {
   if (typeof input.audio_reactive !== "boolean") {
     return { error: "field 'audio_reactive' must be a boolean" };
   }
+  const layer = validateLayer(input.layer);
+  if (layer.error) return { error: layer.error };
   const { sketch_id, retired_id } = addP5SketchSlot(state, {
     position: input.position,
     size: input.size,
     code: input.code,
     audio_reactive: input.audio_reactive,
     lifetime_s: input.lifetime_s ?? null,
+    layer: layer.normalized,
   });
   return retired_id
     ? { sketch_id, retired_id }
@@ -191,7 +261,16 @@ function validateCompositeElement(el, index) {
   }
   const reactivity = validateReactivity(el.reactivity);
   if (reactivity.error) return { error: `${prefix}: ${reactivity.error}` };
-  return { ok: true, reactivity: reactivity.normalized };
+  const layer = validateLayer(el.layer);
+  if (layer.error) return { error: `${prefix}: ${layer.error}` };
+  const motion = validateMotion(el.motion);
+  if (motion.error) return { error: `${prefix}: ${motion.error}` };
+  return {
+    ok: true,
+    reactivity: reactivity.normalized,
+    layer: layer.normalized,
+    motion: motion.normalized,
+  };
 }
 
 function handleAddCompositeScene(state, input) {
@@ -206,27 +285,26 @@ function handleAddCompositeScene(state, input) {
 
   // Atomic validation pass — if any element is invalid the whole composite
   // is rejected before any state mutation. validateCompositeElement also
-  // normalizes each member's reactivity; capture those results here so the
-  // mutation pass below doesn't need to re-validate.
+  // normalizes each member's reactivity / layer / motion; capture those
+  // results here so the mutation pass below doesn't need to re-validate.
   const perMemberReactivity = [];
+  const perMemberLayer = [];
+  const perMemberMotion = [];
   for (let i = 0; i < input.elements.length; i += 1) {
     const result = validateCompositeElement(input.elements[i], i);
     if (result.error) return { error: result.error };
     perMemberReactivity.push(result.reactivity);
+    perMemberLayer.push(result.layer);
+    perMemberMotion.push(result.motion);
   }
 
-  // Shared lifetime: explicit numeric value wins; otherwise if any member's
-  // default lifetime is permanent (null), the whole composite is permanent.
-  // If every member is timed, use the longest of those defaults.
-  let sharedLifetime;
-  if (typeof input.lifetime_s === "number" && Number.isFinite(input.lifetime_s)) {
-    sharedLifetime = input.lifetime_s;
-  } else {
-    const defaults = input.elements.map((el) => DEFAULT_LIFETIMES[el.type]);
-    sharedLifetime = defaults.some((value) => value === null)
-      ? null
-      : Math.max(...defaults);
-  }
+  // Composite lifetime: an explicit numeric group lifetime wins for all
+  // members. Otherwise each member uses its own type default so image turnover
+  // is preserved even inside a text+image composite.
+  const sharedLifetime =
+    typeof input.lifetime_s === "number" && Number.isFinite(input.lifetime_s)
+      ? input.lifetime_s
+      : undefined;
 
   const groupId = addCompositionGroup(state, { group_label: input.group_label });
 
@@ -260,11 +338,151 @@ function handleAddCompositeScene(state, input) {
       content,
       lifetime_s: sharedLifetime,
       reactivity: perMemberReactivity[i],
+      layer: perMemberLayer[i],
+      motion: perMemberMotion[i],
     });
     elementIds.push(id);
   }
 
   return { composition_group_id: groupId, element_ids: elementIds };
+}
+
+// ─── Recompose tool handlers (expanded-tools) ──────────────────────
+// All 5 recompose tools target an existing element_id (or the whole
+// scene). They validate inputs, look up the element when applicable,
+// and either echo {ok:true,...} or return {error:"..."}. morphElement
+// is the only one that mutates state.elements — it rewrites the
+// element's content in-place so later cycles' scene summary reflects
+// the new asset.
+function findElementById(state, elementId) {
+  if (!Array.isArray(state?.elements)) return null;
+  return state.elements.find((el) => el?.element_id === elementId) ?? null;
+}
+
+function requireFiniteNumber(input, field) {
+  const v = input[field];
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    return { error: `field '${field}' must be a finite number` };
+  }
+  return null;
+}
+
+function handleTransformElement(state, input) {
+  const idErr = requireString(input, "element_id");
+  if (idErr) return idErr;
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  if (!input.transform || typeof input.transform !== "object" || Array.isArray(input.transform)) {
+    return { error: "missing required field 'transform'" };
+  }
+  const parsed = TransformSpecSchema.safeParse(input.transform);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `transform invalid: ${issues}` };
+  }
+  const el = findElementById(state, input.element_id);
+  if (!el) return { error: "no such element" };
+  return { ok: true, element_id: input.element_id, transform: parsed.data, duration_ms: input.duration_ms };
+}
+
+function handleMorphElement(state, input) {
+  const idErr = requireString(input, "element_id");
+  if (idErr) return idErr;
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  if (!input.to || typeof input.to !== "object" || Array.isArray(input.to)) {
+    return { error: "missing required field 'to'" };
+  }
+  const parsed = MorphTargetSchema.safeParse(input.to);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `to invalid: ${issues}` };
+  }
+  const el = findElementById(state, input.element_id);
+  if (!el) return { error: "no such element" };
+  // Mutate the stored element's content so subsequent scene summaries
+  // reflect the morph. The element_id stays; the type and content
+  // change in place. This intentionally skips morphs onto text — the
+  // recompose surface for text is textAnimate, not morphElement.
+  if (el.type === "text") return { error: "morphElement not supported on text elements; use textAnimate" };
+  el.type = parsed.data.type;
+  el.content = el.content && typeof el.content === "object" ? { ...el.content } : {};
+  if (parsed.data.type === "svg") {
+    el.content.svg_markup = parsed.data.content_or_src;
+    if (typeof el.content.semantic_label !== "string") {
+      el.content.semantic_label = "morphed form";
+    }
+    delete el.content.query;
+    delete el.content.browser_url;
+    delete el.content.image_error;
+    delete el.content.attribution;
+  } else {
+    el.content.query = parsed.data.content_or_src;
+    el.content.browser_url = null;
+    el.content.image_error = null;
+    el.content.attribution = null;
+    delete el.content.svg_markup;
+    delete el.content.semantic_label;
+  }
+  return { ok: true, element_id: input.element_id, to: parsed.data, duration_ms: input.duration_ms };
+}
+
+function handlePulseScene(_state, input) {
+  const intErr = requireFiniteNumber(input, "intensity");
+  if (intErr) return intErr;
+  if (input.intensity < 0 || input.intensity > 1) {
+    return { error: "field 'intensity' must be between 0 and 1" };
+  }
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  if (input.color !== undefined && input.color !== null && typeof input.color !== "string") {
+    return { error: "field 'color' must be a string when provided" };
+  }
+  return {
+    ok: true,
+    intensity: input.intensity,
+    color: typeof input.color === "string" ? input.color : null,
+    duration_ms: input.duration_ms,
+  };
+}
+
+function handlePaletteShift(_state, input) {
+  if (!input.target || typeof input.target !== "object" || Array.isArray(input.target)) {
+    return { error: "missing required field 'target'" };
+  }
+  const parsed = PaletteTargetSchema.safeParse(input.target);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((x) => `${x.path.join(".") || "(root)"}: ${x.message}`)
+      .join("; ");
+    return { error: `target invalid: ${issues}` };
+  }
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  return { ok: true, target: parsed.data, duration_ms: input.duration_ms };
+}
+
+function handleTextAnimate(state, input) {
+  const idErr = requireString(input, "element_id");
+  if (idErr) return idErr;
+  if (typeof input.effect !== "string" || !TEXT_ANIMATE_EFFECT_SET.has(input.effect)) {
+    return { error: `field 'effect' must be one of ${[...TEXT_ANIMATE_EFFECT_SET].join(", ")}` };
+  }
+  const durErr = requireFiniteNumber(input, "duration_ms");
+  if (durErr) return durErr;
+  if (input.duration_ms < 0) return { error: "field 'duration_ms' must be >= 0" };
+  const el = findElementById(state, input.element_id);
+  if (!el) return { error: "no such element" };
+  if (el.type !== "text") return { error: "textAnimate only applies to text elements" };
+  return { ok: true, element_id: input.element_id, effect: input.effect, duration_ms: input.duration_ms };
 }
 
 export function applyToolCall(state, toolUseBlock) {
@@ -286,6 +504,16 @@ export function applyToolCall(state, toolUseBlock) {
       return handleSetP5Background(state, input);
     case "addP5Sketch":
       return handleAddP5Sketch(state, input);
+    case "transformElement":
+      return handleTransformElement(state, input);
+    case "morphElement":
+      return handleMorphElement(state, input);
+    case "pulseScene":
+      return handlePulseScene(state, input);
+    case "paletteShift":
+      return handlePaletteShift(state, input);
+    case "textAnimate":
+      return handleTextAnimate(state, input);
     default:
       return { error: `unknown tool '${toolUseBlock?.name}'` };
   }
@@ -417,7 +645,23 @@ if (isDirectNodeExecution) {
     });
     assert.equal(r.element_id, "elem_0001");
     assert.equal(s.elements[0].content.query, "threshold light");
-    assert.equal(s.elements[0].lifetime_s, null);
+    // v6.2: images now default to a TTL rather than permanent. The exact
+    // value lives in scene_state (IMAGE_DEFAULT_TTL_S); assert only that
+    // a finite positive number landed so the tests don't hard-code the
+    // constant.
+    assert.equal(typeof s.elements[0].lifetime_s, "number");
+    assert.ok(s.elements[0].lifetime_s > 0);
+  });
+
+  t("applyToolCall addImage with explicit lifetime_s: null still uses image TTL", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      name: "addImage",
+      input: { query: "anchor", position: "background", lifetime_s: null },
+    });
+    assert.ok(r.element_id);
+    assert.equal(typeof s.elements[0].lifetime_s, "number");
+    assert.ok(s.elements[0].lifetime_s > 0);
   });
 
   t("applyToolCall addImage without query returns error", () => {
@@ -688,7 +932,29 @@ if (isDirectNodeExecution) {
     assert.equal(s.elements.length, 0);
   });
 
-  t("applyToolCall addCompositeScene becomes permanent when any member type has null default lifetime", () => {
+  t("applyToolCall addCompositeScene uses per-type lifetimes when no group lifetime is supplied", () => {
+    // Text can persist as accumulated testimony while visual members in the
+    // same group still receive their own turnover defaults.
+    const s = freshState(0, 10);
+    applyToolCall(s, {
+      type: "tool_use",
+      id: "t",
+      name: "addCompositeScene",
+      input: {
+        group_label: "g",
+        elements: [
+          { type: "svg", svg_markup: "<svg/>", position: "c", semantic_label: "x" },
+          { type: "text", content: "permanent", position: "c", style: "s" },
+        ],
+      },
+    });
+    assert.equal(s.elements[0].lifetime_s, DEFAULT_LIFETIMES.svg);
+    assert.equal(s.elements[1].lifetime_s, null);
+    assert.equal(s.elements[0].fades_at_elapsed_s, 10 + DEFAULT_LIFETIMES.svg);
+    assert.equal(s.elements[1].fades_at_elapsed_s, null);
+  });
+
+  t("applyToolCall addCompositeScene with svg + image preserves each default lifetime", () => {
     const s = freshState(0, 10);
     applyToolCall(s, {
       type: "tool_use",
@@ -702,10 +968,10 @@ if (isDirectNodeExecution) {
         ],
       },
     });
-    assert.equal(s.elements[0].lifetime_s, null);
-    assert.equal(s.elements[1].lifetime_s, null);
-    assert.equal(s.elements[0].fades_at_elapsed_s, null);
-    assert.equal(s.elements[1].fades_at_elapsed_s, null);
+    assert.equal(s.elements[0].lifetime_s, DEFAULT_LIFETIMES.svg);
+    assert.equal(s.elements[1].lifetime_s, DEFAULT_LIFETIMES.image);
+    assert.equal(s.elements[0].fades_at_elapsed_s, 10 + DEFAULT_LIFETIMES.svg);
+    assert.equal(s.elements[1].fades_at_elapsed_s, 10 + DEFAULT_LIFETIMES.image);
   });
 
   t("applyToolCall addCompositeScene with only SVG members uses the timed SVG default", () => {
@@ -1209,6 +1475,302 @@ if (isDirectNodeExecution) {
     assert.match(r.error, /composite element 1|reactivity/i);
     assert.equal(s.elements.length, 0, "atomic failure — no members added");
     assert.equal(Object.keys(s.composition_groups).length, 0, "no group minted");
+  });
+
+  // ─── Recompose tools (expanded-tools) ────────────────────────────
+  t("applyToolCall transformElement validates, looks up element, returns ok-echo", () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tt", name: "transformElement",
+      input: {
+        element_id: addR.element_id,
+        transform: { rotate: 15, scale: 1.2 },
+        duration_ms: 600,
+      },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.element_id, addR.element_id);
+    assert.equal(r.transform.rotate, 15);
+  });
+
+  t("applyToolCall transformElement rejects unknown element + empty transform + bad duration", () => {
+    const s = freshState();
+    const r1 = applyToolCall(s, {
+      type: "tool_use", id: "t", name: "transformElement",
+      input: { element_id: "elem_9999", transform: { rotate: 1 }, duration_ms: 100 },
+    });
+    assert.deepEqual(r1, { error: "no such element" });
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const r2 = applyToolCall(s, {
+      type: "tool_use", id: "t2", name: "transformElement",
+      input: { element_id: addR.element_id, transform: {}, duration_ms: 100 },
+    });
+    assert.match(r2.error, /transform invalid/);
+    const r3 = applyToolCall(s, {
+      type: "tool_use", id: "t3", name: "transformElement",
+      input: { element_id: addR.element_id, transform: { rotate: 1 }, duration_ms: -5 },
+    });
+    assert.match(r3.error, /duration_ms/);
+  });
+
+  t("applyToolCall morphElement updates the stored element content in-place", () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addSVG",
+      input: {
+        svg_markup: "<svg viewBox='0 0 10 10'><circle cx='5' cy='5' r='3'/></svg>",
+        position: "center",
+        semantic_label: "ring",
+      },
+    });
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tm", name: "morphElement",
+      input: {
+        element_id: addR.element_id,
+        to: { type: "image", content_or_src: "minaret at dusk" },
+        duration_ms: 800,
+      },
+    });
+    assert.equal(r.ok, true);
+    const stored = s.elements.find((e) => e.element_id === addR.element_id);
+    assert.equal(stored.type, "image");
+    assert.equal(stored.content.query, "minaret at dusk");
+    assert.equal(stored.content.svg_markup, undefined);
+  });
+
+  t("applyToolCall morphElement rejects on text element type", () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tm", name: "morphElement",
+      input: {
+        element_id: addR.element_id,
+        to: { type: "svg", content_or_src: "<svg/>" },
+        duration_ms: 400,
+      },
+    });
+    assert.match(r.error, /not supported on text/);
+  });
+
+  t("applyToolCall pulseScene validates intensity in [0,1] and returns ok-echo", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tp", name: "pulseScene",
+      input: { intensity: 0.6, color: "#d59c6a", duration_ms: 400 },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.color, "#d59c6a");
+    const bad = applyToolCall(s, {
+      type: "tool_use", id: "tp2", name: "pulseScene",
+      input: { intensity: 1.7, duration_ms: 400 },
+    });
+    assert.match(bad.error, /intensity/);
+  });
+
+  t("applyToolCall paletteShift requires at least one of hue/saturation/lightness", () => {
+    const s = freshState();
+    const r = applyToolCall(s, {
+      type: "tool_use", id: "tps", name: "paletteShift",
+      input: { target: { hue: 20 }, duration_ms: 1200 },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.target.hue, 20);
+    const bad = applyToolCall(s, {
+      type: "tool_use", id: "tps2", name: "paletteShift",
+      input: { target: {}, duration_ms: 1200 },
+    });
+    assert.match(bad.error, /target invalid/);
+  });
+
+  t("applyToolCall textAnimate rejects unknown effect and non-text elements", () => {
+    const s = freshState();
+    const tx = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "what remains", position: "center", style: "serif" },
+    });
+    const sv = applyToolCall(s, {
+      type: "tool_use", id: "tb", name: "addSVG",
+      input: { svg_markup: "<svg/>", position: "center", semantic_label: "x" },
+    });
+    const ok = applyToolCall(s, {
+      type: "tool_use", id: "tc", name: "textAnimate",
+      input: { element_id: tx.element_id, effect: "wordByWord", duration_ms: 600 },
+    });
+    assert.equal(ok.ok, true);
+    const badEffect = applyToolCall(s, {
+      type: "tool_use", id: "td", name: "textAnimate",
+      input: { element_id: tx.element_id, effect: "spinaround", duration_ms: 600 },
+    });
+    assert.match(badEffect.error, /effect/);
+    const wrongType = applyToolCall(s, {
+      type: "tool_use", id: "te", name: "textAnimate",
+      input: { element_id: sv.element_id, effect: "shake", duration_ms: 400 },
+    });
+    assert.match(wrongType.error, /text elements/);
+  });
+
+  t("applyToolCallDetailed for transformElement returns the element.transform patch", async () => {
+    const s = freshState();
+    const addR = applyToolCall(s, {
+      type: "tool_use", id: "ta", name: "addText",
+      input: { content: "x", position: "c", style: "s" },
+    });
+    const detailed = await applyToolCallDetailed(s, {
+      type: "tool_use", id: "tt", name: "transformElement",
+      input: {
+        element_id: addR.element_id,
+        transform: { translate: { x: 5, y: -3 } },
+        duration_ms: 300,
+      },
+    });
+    assert.equal(detailed.result.ok, true);
+    assert.equal(detailed.patches.length, 1);
+    assert.equal(detailed.patches[0].type, "element.transform");
+    assert.equal(detailed.patches[0].element_id, addR.element_id);
+    assert.equal(detailed.patches[0].transform.translate.x, 5);
+  });
+
+  t("applyToolCallDetailed for pulseScene returns scene.pulse patch with optional color", async () => {
+    const s = freshState();
+    const detailed = await applyToolCallDetailed(s, {
+      type: "tool_use", id: "tp", name: "pulseScene",
+      input: { intensity: 0.4, duration_ms: 600 },
+    });
+    assert.equal(detailed.patches.length, 1);
+    assert.equal(detailed.patches[0].type, "scene.pulse");
+    assert.equal(detailed.patches[0].intensity, 0.4);
+    assert.equal("color" in detailed.patches[0], false);
+  });
+
+  // ─── Reactivity + lifecycle (feature/reactivity-lifecycle) ────────
+  t("addText accepts optional layer + motion; invalid layer rejects", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r = applyToolCall(s, {
+      name: "addText",
+      input: {
+        content: "after", position: "center", style: "serif",
+        layer: "foreground",
+        motion: { preset: "breathe" },
+      },
+    });
+    assert.ok(r.element_id);
+    const stored = s.elements.find((e) => e.element_id === r.element_id);
+    assert.equal(stored.layer, "foreground");
+    assert.equal(stored.motion.preset, "breathe");
+    const bad = applyToolCall(s, {
+      name: "addText",
+      input: { content: "x", position: "c", style: "s", layer: "hud" },
+    });
+    assert.match(bad.error, /layer/);
+  });
+
+  t("addImage default lifetime is TTL; explicit null is treated as default TTL", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const r1 = applyToolCall(s, {
+      name: "addImage",
+      input: { query: "lamp glow", position: "background" },
+    });
+    const r2 = applyToolCall(s, {
+      name: "addImage",
+      input: { query: "ttl anchor", position: "background", lifetime_s: null },
+    });
+    const e1 = s.elements.find((e) => e.element_id === r1.element_id);
+    const e2 = s.elements.find((e) => e.element_id === r2.element_id);
+    assert.equal(typeof e1.lifetime_s, "number");
+    assert.ok(e1.lifetime_s > 0);
+    assert.equal(typeof e2.lifetime_s, "number");
+    assert.ok(e2.lifetime_s > 0);
+  });
+
+  t("addP5Sketch accepts optional layer; invalid layer rejects", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const good = applyToolCall(s, {
+      name: "addP5Sketch",
+      input: {
+        position: "center", size: "medium", code: "noop()", audio_reactive: true,
+        layer: "midground",
+      },
+    });
+    assert.ok(good.sketch_id);
+    const stored = s.p5_sketches.find((x) => x.sketch_id === good.sketch_id);
+    assert.equal(stored.layer, "midground");
+    const bad = applyToolCall(s, {
+      name: "addP5Sketch",
+      input: {
+        position: "center", size: "medium", code: "noop()", audio_reactive: true,
+        layer: "overlay",
+      },
+    });
+    assert.match(bad.error, /layer/);
+  });
+
+  t("motion validator rejects unknown preset and Infinity intensity", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const badPreset = applyToolCall(s, {
+      name: "addSVG",
+      input: {
+        svg_markup: "<svg></svg>", position: "center", semantic_label: "x",
+        motion: { preset: "shimmer" },
+      },
+    });
+    assert.match(badPreset.error, /motion/);
+    const badIntensity = applyToolCall(s, {
+      name: "addSVG",
+      input: {
+        svg_markup: "<svg></svg>", position: "center", semantic_label: "x",
+        motion: { preset: "breathe", intensity: Infinity },
+      },
+    });
+    assert.match(badIntensity.error, /motion/);
+  });
+
+  t("addCompositeScene accepts per-member layer + motion; invalid member layer rejects atomically", () => {
+    const s = createInitialState();
+    beginCycle(s, { cycleIndex: 0, elapsedTotalS: 5 });
+    const ok = applyToolCall(s, {
+      name: "addCompositeScene",
+      input: {
+        group_label: "threshold arrival",
+        elements: [
+          { type: "text", content: "after", position: "lower-left", style: "serif",
+            layer: "foreground", motion: { preset: "breathe" } },
+          { type: "image", query: "lamp glow", position: "background", layer: "background" },
+        ],
+      },
+    });
+    assert.ok(ok.composition_group_id);
+    const txt = s.elements.find((e) => e.element_id === ok.element_ids[0]);
+    const img = s.elements.find((e) => e.element_id === ok.element_ids[1]);
+    assert.equal(txt.layer, "foreground");
+    assert.equal(txt.motion.preset, "breathe");
+    assert.equal(img.layer, "background");
+
+    const bad = applyToolCall(s, {
+      name: "addCompositeScene",
+      input: {
+        group_label: "bad composite",
+        elements: [
+          { type: "text", content: "a", position: "center", style: "s" },
+          { type: "text", content: "b", position: "c", style: "s", layer: "overlay" },
+        ],
+      },
+    });
+    assert.match(bad.error, /composite element 1/);
+    assert.equal(s.elements.length, 2, "bad composite did not touch state beyond the successful one");
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);
