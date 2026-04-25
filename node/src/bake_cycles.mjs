@@ -97,9 +97,12 @@ function findReferencePhotos() {
     .sort().map((f) => ({ path: join(REFERENCE_PHOTOS_DIR, f), label: `reference: ${f}` }));
 }
 
-function findMoodBoardSvgs() {
+function findMoodBoardImages() {
+  // Anthropic image API rejects SVG; only PNG/JPEG/GIF/WEBP. SVG mood
+  // board files are skipped; mood_board.json text metadata in the
+  // system prompt still conveys the conceptual content.
   if (!existsSync(MOOD_BOARD_DIR)) return [];
-  return readdirSync(MOOD_BOARD_DIR).filter((f) => f.endsWith(".svg"))
+  return readdirSync(MOOD_BOARD_DIR).filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
     .sort().map((f) => ({ path: join(MOOD_BOARD_DIR, f), label: `mood: ${f}` }));
 }
 
@@ -216,7 +219,7 @@ export async function runCycles({ bakeDir, corpus, concurrency = 5,
     { path: MOOD_BOARD_JSON, label: "MOOD BOARD METADATA" },
   ];
   const imageFiles = [
-    ...findMoodBoardSvgs(),
+    ...findMoodBoardImages(),
     ...findReferencePhotos(),
     { path: layout.spectrogramPng, label: "track spectrogram" },
     { path: layout.dspPanelPng, label: "track DSP panel" },

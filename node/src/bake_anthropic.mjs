@@ -34,8 +34,7 @@ function mimeTypeFor(path) {
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   if (ext === ".webp") return "image/webp";
   if (ext === ".gif") return "image/gif";
-  if (ext === ".svg") return "image/svg+xml";
-  throw new Error(`unsupported image extension for ${path}`);
+  throw new Error(`unsupported image extension for ${path} (Anthropic API accepts png, jpg, gif, webp only)`);
 }
 
 function imageBlockFromFile(path) {
