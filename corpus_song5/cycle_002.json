@@ -1,0 +1,53 @@
+{
+  "cycle_id": "cycle_002",
+  "cycle_index": 2,
+  "source_file": "song 5wav_from_35s.wav",
+  "snapshot_time_s": 15.0,
+  "elapsed_total_s": 15.0,
+  "window_duration_s": 4.0,
+  "window_start_s": 11.0,
+  "window_end_s": 15.0,
+  "block_1_scalars": {
+    "rms_mean": 0.026,
+    "rms_peak": 0.058,
+    "rms_trend": "sustained",
+    "centroid_mean_hz": 1195,
+    "centroid_trend": "sustained",
+    "onset_density": 13.5,
+    "onset_peak_strength": 1.821,
+    "pitch_class_dominant": "E",
+    "pitch_class_secondary": null,
+    "silence_ratio": 0.0,
+    "window_duration_s": 4.0,
+    "elapsed_total_s": 15.0
+  },
+  "block_2_summary": "Moderate intensity, sustained. Balanced timbre. Dense articulation. Tonal center E. Early in the performance, opening territory.",
+  "block_3_sparklines": {
+    "rms": "▃▆▅▅▄▄▂▄▆▃▂▁▁▂▄▆▅█▃▃",
+    "onset": "▇▂▂▃▂▁▆▆▇▆█▄▂▅▆▆██▂▆",
+    "centroid": "▆▅▄▂▂▂▅▅▅█▇▆▄▃▁▃▃▅▆▅"
+  },
+  "_debug": {
+    "file_percentiles": {
+      "rms_p10": 0.010205593425780535,
+      "rms_p33": 0.016422949563711882,
+      "rms_p66": 0.030737979300320146,
+      "rms_p90": 0.06290177479386332,
+      "centroid_p10": 375.1162706680079,
+      "centroid_p33": 880.1452329618525,
+      "centroid_p66": 1231.803755981919,
+      "centroid_p90": 1459.2714987141158,
+      "onset_density_p10": 8.225000000000001,
+      "onset_density_p33": 11.535,
+      "onset_density_p66": 13.25,
+      "onset_density_p90": 14.025,
+      "onset_strength_p90": 0.9753356039524079
+    },
+    "rms_std": 0.026119432325500007,
+    "centroid_std": 500.1836041052082,
+    "silence_threshold": 0.01,
+    "onset_peak_threshold": 0.48766780197620396,
+    "rms_normalized_slope": -0.036604503219024295,
+    "centroid_normalized_slope": 0.04637060181954242
+  }
+}

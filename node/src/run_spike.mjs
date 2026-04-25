@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { parseArgs } from "node:util";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
+import { copyFileSync, readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -14,13 +14,17 @@ import {
   formatSummary,
   saveState,
   snapshotCycle,
+  recordDecision,
+  formatRecentDecisions,
+  formatDirectorStatus,
 } from "./scene_state.mjs";
 import { applyToolCallDetailed } from "./tool_handlers.mjs";
+import { autoFadeDurationForElement } from "./patch_emitter.mjs";
 import { renderFinalHtml, renderLiveHtml } from "./operator_views.mjs";
 import { createStageServer } from "./stage_server.mjs";
 import {
   loadMoodBoard,
-  buildMoodBoardSystemBlocks,
+  buildMoodBoardUserBlocks,
   shouldCaptureSelfFrame,
   buildSelfFrameUserBlocks,
 } from "./image_content.mjs";
@@ -52,7 +56,7 @@ const CYCLE_STATUS = Object.freeze({
 const VALID_STOP_REASONS = new Set(["tool_use", "end_turn"]);
 
 function usage() {
-  return `Usage: node src/run_spike.mjs <corpus_dir> --config <name> [--cycles N:M] [--dry-run] [--feature-producer <python|none>]
+  return `Usage: node src/run_spike.mjs <corpus_dir> --config <name> [--cycles N:M] [--dry-run] [--feature-producer <python|none>] [--stage-audio <wav>]
        node src/run_spike.mjs --self-test
 
 Arguments:
@@ -61,6 +65,7 @@ Arguments:
   --cycles N:M    optional inclusive range of cycle indices (default: all)
   --dry-run       build packets and synthesize tool calls locally; do not call the API
                   (default: real API mode — spends credit)
+  --stage-audio   optional WAV to expose to the browser stage as /run/<id>/audio.wav
   --self-test     run inline self-tests for error handling and exit
 `;
 }
@@ -300,9 +305,9 @@ function synthesizeToolCalls(cycleIndex, state) {
           name: "addSVG",
           input: {
             svg_markup:
-              `<svg viewBox="0 0 100 100"><line x1="0" y1="${50 + (cycleIndex % 10)}" x2="100" y2="${50 - (cycleIndex % 10)}" stroke="white" stroke-width="2"/></svg>`,
+              `<svg viewBox="0 0 100 100"><line x1="0" y1="${50 + (cycleIndex % 10)}" x2="100" y2="${50 - (cycleIndex % 10)}" stroke="#f5e6c8" stroke-width="2" opacity="0.85"/></svg>`,
             position: "horizontal band at mid-height",
-            semantic_label: `angular break at cycle ${cycleIndex}`,
+            semantic_label: `thin line of moonlight at cycle ${cycleIndex}`,
           },
         },
       ];
@@ -311,7 +316,7 @@ function synthesizeToolCalls(cycleIndex, state) {
         {
           name: "addImage",
           input: {
-            query: `threshold light at cycle ${cycleIndex}`,
+            query: `moonlight on still water at cycle ${cycleIndex}`,
             position: "background",
           },
         },
@@ -520,6 +525,7 @@ async function processCycleReal({
     }
     toolResults.push({ tool_use_id: block.id, name: block.name, result: detailed.result });
     patches.push(...detailed.patches);
+    recordDecision(state, { toolUseBlock: block, result: detailed.result });
   }
 
   return {
@@ -554,6 +560,7 @@ async function processCycleDry({
     const detailed = await applyToolCallDetailedImpl(state, block, { fetchImageImpl });
     toolResults.push({ tool_use_id: block.id, name: block.name, result: detailed.result });
     patches.push(...detailed.patches);
+    recordDecision(state, { toolUseBlock: block, result: detailed.result });
   }
 
   return {
@@ -577,7 +584,10 @@ function collectAutoFadePatches(state, activeBeforeAutoFade) {
     .map((element) => ({
       type: "element.fade",
       element_id: element.element_id,
-      duration_ms: DEFAULT_PATCH_FADE_DURATION_MS,
+      // v6.2: images get a long opacity-decay (8 s) so their exit reads
+      // as a dissolve rather than a blink. Other types keep the short
+      // default. autoFadeDurationForElement owns the per-type decision.
+      duration_ms: autoFadeDurationForElement(element, DEFAULT_PATCH_FADE_DURATION_MS),
     }));
 }
 
@@ -585,6 +595,23 @@ function detectStageMode(runDir) {
   const hasPrecomputedAudio = existsSync(join(runDir, "audio.wav"));
   const hasPrecomputedFeatures = existsSync(join(runDir, "features_track.json"));
   return hasPrecomputedAudio && hasPrecomputedFeatures ? "precompute" : "live";
+}
+
+function appendQueryParam(urlString, key, value) {
+  const url = new URL(urlString);
+  url.searchParams.set(key, value);
+  return url.toString();
+}
+
+function prepareStageAudio({ sourcePath, runDir, copyFileImpl = copyFileSync }) {
+  if (!sourcePath) return null;
+  const resolvedSource = resolve(sourcePath);
+  if (!existsSync(resolvedSource)) {
+    throw new Error(`stage audio file does not exist: ${resolvedSource}`);
+  }
+  const destPath = join(runDir, "audio.wav");
+  copyFileImpl(resolvedSource, destPath);
+  return { sourcePath: resolvedSource, runPath: destPath };
 }
 
 // Phase 3 narrow diff: feature-producer spawn sits outside the cycle loop so
@@ -676,6 +703,8 @@ async function run(options) {
     startFeatureProducerImpl = startFeatureProducer,
     createSelfFrameCapturerImpl = createSelfFrameCapturer,
     loadMoodBoardImpl = loadMoodBoard,
+    stageAudioPath = null,
+    prepareStageAudioImpl = prepareStageAudio,
   } = options;
 
   const cycles = listCycleFiles(corpusDir).filter((c) => {
@@ -687,7 +716,7 @@ async function run(options) {
   }
 
   const hijazBase =
-    hijazBaseOverride ?? readFileSync(join(NODE_ROOT, "prompts", "hijaz_base.md"), "utf8");
+    hijazBaseOverride ?? readFileSync(join(NODE_ROOT, "prompts", "bayati_base.md"), "utf8");
   const { mediumRules, tools } =
     mediumRulesOverride !== null && toolsOverride !== null
       ? { mediumRules: mediumRulesOverride, tools: toolsOverride }
@@ -697,13 +726,24 @@ async function run(options) {
   const runId = timestampSlug();
   const runDir = join(outputRoot, `run_${runId}`);
   ensureDir(runDir);
+  const cycleOrdinalByIndex = new Map(cycles.map((entry, idx) => [entry.index, idx]));
+  const stageAudio = prepareStageAudioImpl({ sourcePath: stageAudioPath, runDir });
   const stageMode = detectStageMode(runDir);
 
   const client = mode === "real" ? makeClientImpl() : null;
   let liveHtmlPath = null;
-  const stageServer = await createStageServerImpl();
+  const stageServer = await createStageServerImpl({ p5LogWriter: process.stdout });
   await stageServer.setCurrentRunContext({ runId, mode: stageMode, runDir });
-  const operatorUrl = stageServer.getOperatorUrl({ runId, mode: stageMode });
+  const baseOperatorUrl = stageServer.getOperatorUrl({ runId, mode: stageMode });
+  const operatorUrl = stageAudio
+    ? appendQueryParam(baseOperatorUrl, "audio", "1")
+    : baseOperatorUrl;
+  const baseShowUrl = typeof stageServer.getShowUrl === "function"
+    ? stageServer.getShowUrl({ runId, mode: stageMode })
+    : appendQueryParam(baseOperatorUrl.replace("/?", "/show?"), "mode", stageMode);
+  const showUrl = stageAudio
+    ? appendQueryParam(baseShowUrl, "audio", "1")
+    : baseShowUrl;
 
   const resolvedProducer = featureProducer ?? (stageMode === "live" && mode === "real" ? "python" : "none");
   const wsUrl = `ws://${stageServer.host}:${stageServer.port}/ws`;
@@ -721,7 +761,7 @@ async function run(options) {
   let moodBoardBlocks = [];
   try {
     const moodBoard = await loadMoodBoardImpl();
-    moodBoardBlocks = buildMoodBoardSystemBlocks(moodBoard);
+    moodBoardBlocks = buildMoodBoardUserBlocks(moodBoard);
     if (moodBoardBlocks.length > 0) {
       process.stdout.write(`Mood board loaded: ${moodBoard.imageBlocks.length} images.\n`);
     }
@@ -750,7 +790,8 @@ async function run(options) {
       `run_id=${runId} config=${configName} model=${model} cycles=${cycles.length} mode=${mode}\n`,
     );
     process.stdout.write(`output: ${runDir}\n`);
-    process.stdout.write(`stage: ${operatorUrl}\n`);
+    process.stdout.write(`show (stage + HUD): ${showUrl}\n`);
+    process.stdout.write(`stage only: ${operatorUrl}\n`);
 
     const state = createInitialState();
 
@@ -759,6 +800,15 @@ async function run(options) {
       config: configName,
       model,
       mode,
+      stage_url: operatorUrl,
+      show_url: showUrl,
+      stage_audio: stageAudio
+        ? {
+            enabled: true,
+            source_path: stageAudio.sourcePath,
+            run_path: stageAudio.runPath,
+          }
+        : { enabled: false },
       corpus_dir: corpusDir,
       cycles_total: cycles.length,
       cycles_range: cyclesRange,
@@ -814,12 +864,16 @@ async function run(options) {
         packet = buildPacket({
           cycle,
           sceneStateSummary: formatSummary(state),
+          directorStatusSummary: formatDirectorStatus(state, { cyclesTotal: cycles.length }),
+          recentDecisionsSummary: formatRecentDecisions(state.decision_history, cycle.cycle_index),
           hijazBase,
           mediumRules,
           tools,
           model,
           moodBoardBlocks,
           selfFrameUserBlocks: pendingSelfFrameBlocks,
+          cycleOrdinal: cycleOrdinalByIndex.get(c.index),
+          cyclesTotal: cycles.length,
         });
         pendingSelfFrameBlocks = [];                              // consumed — reset after use
 
@@ -1011,7 +1065,8 @@ async function run(options) {
         `Tool calls total: ${summary.totals.tool_calls} (${summary.totals.cycles_with_tool_calls} cycles with calls, ${summary.totals.cycles_silent} silent)\n` +
         (mode === "real" ? `Cost total: $${summary.totals.cost.toFixed(4)}\n` : "") +
         `Run dir: ${runDir}\n` +
-        `Stage: ${operatorUrl}\n` +
+        `Show (stage + HUD): ${showUrl}\n` +
+        `Stage only: ${operatorUrl}\n` +
         (liveHtmlPath ? `Live monitor: ${liveHtmlPath}\n` : "") +
         (summaryWriteErr ? `Run summary write failed: ${summaryWriteErr.message}\n` : "") +
         (finalHtmlPath ? `Final HTML: ${finalHtmlPath}\n` : ""),
@@ -1025,6 +1080,7 @@ async function run(options) {
       finalHtmlPath,
       summaryWriteError: summaryWriteErr,
       operatorUrl,
+      showUrl,
       interrupted: interruptState.requested,
     };
   } finally {
@@ -1169,6 +1225,9 @@ async function runSelfTests() {
       },
       getOperatorUrl({ runId, mode }) {
         return `http://127.0.0.1:9999/?run_id=${runId}&mode=${mode}`;
+      },
+      getShowUrl({ runId, mode }) {
+        return `http://127.0.0.1:9999/show?run_id=${runId}&mode=${mode}`;
       },
       async close() {},
     };
@@ -1362,7 +1421,7 @@ async function runSelfTests() {
     const captured = [];
     writeTestCorpus(corpusDir, 2);
 
-    const { operatorUrl, runDir } = await run({
+    const { operatorUrl, showUrl, runDir } = await run({
       corpusDir,
       configName: "config_a",
       cyclesRange: null,
@@ -1383,7 +1442,41 @@ async function runSelfTests() {
     assert.equal(captured[4].type, "element.add");
     assert.equal(captured[5].type, "cycle.end");
     assert.match(operatorUrl, /\?run_id=.*&mode=live$/);
+    assert.match(showUrl, /\/show\?run_id=.*&mode=live$/);
     assert.equal(existsSync(join(runDir, "final_scene.html")), true);
+  });
+
+  await t("run copies optional stage audio and advertises it in the live stage URL", async () => {
+    const tempRoot = freshTempRoot("run-spike-stage-audio");
+    const corpusDir = join(tempRoot, "corpus");
+    const outputRoot = join(tempRoot, "output");
+    const stageAudioPath = join(tempRoot, "sample.wav");
+    writeTestCorpus(corpusDir, 1);
+    writeFileSync(stageAudioPath, "fake wav bytes");
+
+    const { operatorUrl, showUrl, runDir, summary } = await run({
+      corpusDir,
+      configName: "config_a",
+      cyclesRange: null,
+      mode: "dry-run",
+      outputRoot,
+      hijazBaseOverride: "self-test hijaz base",
+      mediumRulesOverride: "self-test medium rules",
+      toolsOverride: [],
+      modelOverride: "claude-opus-4-7",
+      sleepImpl: async () => {},
+      createStageServerImpl: async () => makeStageServerStub(),
+      stageAudioPath,
+    });
+
+    assert.equal(readFileSync(join(runDir, "audio.wav"), "utf8"), "fake wav bytes");
+    assert.match(operatorUrl, /\?run_id=.*&mode=live&audio=1$/);
+    assert.match(showUrl, /\/show\?run_id=.*&mode=live&audio=1$/);
+    assert.equal(summary.stage_audio.enabled, true);
+    assert.equal(summary.stage_url, operatorUrl);
+    assert.equal(summary.show_url, showUrl);
+    assert.equal(summary.stage_audio.source_path, stageAudioPath);
+    assert.equal(summary.stage_audio.run_path, join(runDir, "audio.wav"));
   });
 
   await t("run finalizes partial artifacts after SIGINT and stops before the next cycle", async () => {
@@ -1576,6 +1669,7 @@ async function runSelfTests() {
       sleepImpl: async () => {},
       createStageServerImpl: async () => makeStageServerStub(),
       createSelfFrameCapturerImpl: () => mockCapturer,
+      loadMoodBoardImpl: async () => ({ labelText: "", imageBlocks: [] }),
     });
 
     // With 6 silent cycles (no image element.adds): cyclesSinceLastImage increments
@@ -1637,12 +1731,131 @@ async function runSelfTests() {
     assert.equal(summary.interrupted, false);
   });
 
+  await t("--use-baked round-trip dispatches expected patches in order", async () => {
+    const tempRoot = freshTempRoot("run-spike-bake-replay");
+    const bakeDir = join(tempRoot, "bake_x");
+    const cyclesDir = join(bakeDir, "cycles");
+    const { mkdirSync: mdk, writeFileSync: wf } = await import("node:fs");
+    mdk(cyclesDir, { recursive: true });
+    wf(join(bakeDir, "composition_plan.json"), JSON.stringify({
+      track_id: "x", duration_s: 10, cycle_count: 2,
+      overall_arc: [{ act_index: 0, name: "Birth", cycle_range: [0, 1], intent: "i" }],
+      per_cycle_intent: [
+        { cycle: 0, active_act: 0, intent: "i0", energy_hint: "low" },
+        { cycle: 1, active_act: 0, intent: "i1", energy_hint: "rising" },
+      ],
+      element_vocabulary: { anchors: ["m"], palette_progression: [], introduce_at: {}, retire_at: {} },
+      foreshadow_pairs: [],
+      anticipation_offsets_ms: { "0": 0, "1": 0 },
+      model: "m", thinking_budget: 1, baked_at: "z",
+    }));
+    for (let i = 0; i < 2; i++) {
+      wf(join(cyclesDir, `cycle_${String(i).padStart(3, "0")}.json`),
+        JSON.stringify({
+          cycle_index: i, cycle_id: `cycle_${String(i).padStart(3, "0")}`,
+          model: "m", thinking_budget: 1,
+          rationale: `r${i}`,
+          tool_calls: [{ id: `tu_${i}`, name: "addText", input: { text: `t${i}` } }],
+          input_signature: `sig_${i}_aaaaaaaa`, stop_reason: "tool_use",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          baked_at: "2026-04-25T00:00:00Z",
+        }));
+    }
+    const player = await import("./bake_player.mjs");
+    const indices = player.enumerateBakedCycles(bakeDir);
+    assert.deepEqual(indices, [0, 1]);
+    const c0 = player.getBakedCycle(bakeDir, 0);
+    const c1 = player.getBakedCycle(bakeDir, 1);
+    assert.equal(c0.tool_calls[0].input.text, "t0");
+    assert.equal(c1.tool_calls[0].input.text, "t1");
+  });
+
   process.stdout.write(
     `\n============ run_spike.mjs self-test ============\n${pass}/${pass + fail} passed\n`,
   );
   if (fail > 0) {
     process.exitCode = 1;
   }
+}
+
+async function runBakedReplay({ bakeDir, stageAudioPath, cyclesRange, recordVideo }) {
+  const player = await import("./bake_player.mjs");
+  const { loadBakeDirectory, getBakedCycle, enumerateBakedCycles, getAnticipationOffsetMs } = player;
+  const { plan, layout } = loadBakeDirectory(bakeDir);
+
+  // Try to find sibling corpus dir for snapshot_time_s; fall back to idx*5
+  const corpusDir = join(layout.root, "..", `corpus_${plan.track_id}`);
+  const hasCorpus = existsSync(corpusDir);
+  if (!hasCorpus) {
+    process.stderr.write(
+      `WARN: corpus_${plan.track_id} not found beside bakeDir — using idx*5s for timestamps\n`,
+    );
+  }
+
+  const allIndices = enumerateBakedCycles(bakeDir);
+  const indices = cyclesRange
+    ? allIndices.filter((i) => i >= cyclesRange[0] && i <= cyclesRange[1])
+    : allIndices;
+
+  const stageServer = await createStageServer({ port: 9999 });
+  const runId = `bake_${Date.now().toString(36)}`;
+  const runDir = join(NODE_ROOT, "output", `run_${runId}`);
+  mkdirSync(runDir, { recursive: true });
+
+  if (stageAudioPath && existsSync(stageAudioPath)) {
+    const dest = join(runDir, "audio.wav");
+    copyFileSync(stageAudioPath, dest);
+  }
+
+  await stageServer.setCurrentRunContext({ runId, mode: "baked", runDir });
+  const operatorUrl = stageServer.getOperatorUrl({ runId, mode: "baked" });
+  const showUrl = stageServer.getShowUrl({ runId, mode: "baked" });
+  process.stdout.write(`run_id=${runId} mode=baked\n`);
+  process.stdout.write(`stage: ${operatorUrl}\n`);
+  process.stdout.write(`show:  ${showUrl}\n`);
+
+  if (recordVideo) {
+    process.stdout.write("video capture: Phase 6 video_capture.mjs (not yet available)\n");
+  }
+
+  // Dispatch all cycle patches immediately (baked-mode has no live audio alignment;
+  // patches fire in sequence with no inter-cycle sleep).
+  for (const idx of indices) {
+    const cycle = getBakedCycle(bakeDir, idx);
+    const offsetMs = getAnticipationOffsetMs(plan, idx);
+
+    let snapshotMs;
+    if (hasCorpus) {
+      try {
+        const corpusCycle = JSON.parse(
+          readFileSync(join(corpusDir, `cycle_${String(idx).padStart(3, "0")}.json`), "utf8"),
+        );
+        snapshotMs = (corpusCycle.snapshot_time_s ?? idx * 5) * 1000;
+      } catch {
+        snapshotMs = idx * 5000;
+      }
+    } else {
+      snapshotMs = idx * 5000;
+    }
+
+    process.stdout.write(`cycle ${String(idx).padStart(3, "0")} (snapshot=${(snapshotMs / 1000).toFixed(1)}s offset=${offsetMs}ms): ${cycle.tool_calls.length} tool call(s)\n`);
+
+    for (const toolCall of cycle.tool_calls) {
+      // Emit a baked tool call patch directly — the stage receives it just
+      // like a live broadcastPatch, letting the browser visualize it.
+      await stageServer.broadcastPatch({
+        type: "baked.tool_call",
+        cycle_index: idx,
+        tool_name: toolCall.name,
+        tool_input: toolCall.input,
+        tool_id: toolCall.id,
+      });
+    }
+  }
+
+  process.stdout.write(`Done. ${indices.length} cycles replayed.\n`);
+  process.stdout.write(`Stage: ${operatorUrl}\n`);
+  await stageServer.close();
 }
 
 async function main() {
@@ -1655,12 +1868,28 @@ async function main() {
         cycles: { type: "string" },
         "dry-run": { type: "boolean", default: false },
         "feature-producer": { type: "string" },
+        "stage-audio": { type: "string" },
+        "use-baked": { type: "string" },
+        "record-video": { type: "boolean", default: false },
       },
     });
   } catch (err) {
     die(`${err.message}\n\n${usage()}`);
   }
   const { values, positionals } = parsed;
+
+  // Bake-mode short-circuit: if --use-baked is set, replay the baked
+  // bundle and return. The existing live-mode path below stays untouched.
+  if (values["use-baked"]) {
+    if (values.config) die("--use-baked is mutually exclusive with --config");
+    if (values["feature-producer"]) die("--use-baked is mutually exclusive with --feature-producer");
+    const bakeDir = resolve(values["use-baked"]);
+    const stageAudioPath = values["stage-audio"] ? resolve(values["stage-audio"]) : null;
+    const cyclesRange = parseCyclesRange(values.cycles);
+    const recordVideo = values["record-video"] ?? false;
+    await runBakedReplay({ bakeDir, stageAudioPath, cyclesRange, recordVideo });
+    return;
+  }
 
   if (positionals.length !== 1) die(usage());
   if (!values.config) die(`--config is required\n\n${usage()}`);
@@ -1670,8 +1899,9 @@ async function main() {
   const configName = values.config;
   const cyclesRange = parseCyclesRange(values.cycles);
   const featureProducer = values["feature-producer"] ?? null;
+  const stageAudioPath = values["stage-audio"] ? resolve(values["stage-audio"]) : null;
 
-  await run({ corpusDir, configName, cyclesRange, mode, featureProducer });
+  await run({ corpusDir, configName, cyclesRange, mode, featureProducer, stageAudioPath });
 }
 
 if (process.argv.includes("--self-test")) {

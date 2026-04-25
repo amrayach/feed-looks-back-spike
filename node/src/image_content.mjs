@@ -125,12 +125,12 @@ export async function loadMoodBoard({
   };
 }
 
-export function buildMoodBoardSystemBlocks({ labelText, imageBlocks }) {
+export function buildMoodBoardUserBlocks({ labelText, imageBlocks }) {
   if (!imageBlocks || imageBlocks.length === 0) return [];
   return [
     { type: "text", text: labelText },
     ...imageBlocks,
-    { type: "text", text: "", cache_control: { type: "ephemeral" } },
+    { type: "text", text: "END MOOD BOARD.", cache_control: { type: "ephemeral" } },
   ];
 }
 
@@ -149,11 +149,10 @@ export function shouldCaptureSelfFrame({
 
 function formatSelfFrameCaption({ previousCycleIndex, activeCount, dominantType, backgroundAgeS }) {
   const parts = [
-    `Previous frame (cycle ${previousCycleIndex}).`,
+    `Prior frame (cycle ${previousCycleIndex}) for visual continuity.`,
     `Elements=${activeCount}`,
     `dominant=${dominantType ?? "none"}`,
     `background_age=${backgroundAgeS ?? 0}s.`,
-    `Adjust if composition needs attention.`,
   ];
   return parts.join(" ");
 }
@@ -224,12 +223,12 @@ if (isDirectNodeExecution) {
   });
 
   await t("loadMoodBoard gracefully skips missing files and continues", async () => {
-    const manifestPath = join(NODE_ROOT, "canon", "_test_broken_manifest.json");
+    const manifestPath = join("/tmp", `flb_mood_board_broken_${process.pid}.json`);
     await fsp.writeFile(
       manifestPath,
       JSON.stringify([
-        { path: "./placeholders/positive_01.svg", role: "positive", label: "real" },
-        { path: "./placeholders/does_not_exist.svg", role: "negative", label: "missing" },
+        { path: join(NODE_ROOT, "canon", "placeholders", "positive_01.svg"), role: "positive", label: "real" },
+        { path: join(NODE_ROOT, "canon", "placeholders", "does_not_exist.svg"), role: "negative", label: "missing" },
       ]),
     );
     try {
@@ -239,44 +238,45 @@ if (isDirectNodeExecution) {
       assert.equal(warnings.length, 1);
       assert.match(warnings[0], /does_not_exist/);
     } finally {
-      await fsp.unlink(manifestPath);
+      await fsp.unlink(manifestPath).catch(() => {});
     }
   });
 
-  await t("buildMoodBoardSystemBlocks appends cache breakpoint after images", async () => {
+  await t("buildMoodBoardUserBlocks appends cache breakpoint after images", async () => {
     const result = await loadMoodBoard();
-    const blocks = buildMoodBoardSystemBlocks(result);
+    const blocks = buildMoodBoardUserBlocks(result);
     assert.equal(blocks.length, 1 + 5 + 1);
     assert.equal(blocks[0].type, "text");
     assert.equal(blocks[6].type, "text");
+    assert.equal(blocks[6].text.length > 0, true);
     assert.deepEqual(blocks[6].cache_control, { type: "ephemeral" });
     for (let i = 1; i <= 5; i += 1) assert.equal(blocks[i].type, "image");
   });
 
-  await t("buildMoodBoardSystemBlocks returns [] when no image blocks", () => {
-    assert.deepEqual(buildMoodBoardSystemBlocks({ labelText: "", imageBlocks: [] }), []);
-    assert.deepEqual(buildMoodBoardSystemBlocks({ labelText: "x", imageBlocks: null }), []);
+  await t("buildMoodBoardUserBlocks returns [] when no image blocks", () => {
+    assert.deepEqual(buildMoodBoardUserBlocks({ labelText: "", imageBlocks: [] }), []);
+    assert.deepEqual(buildMoodBoardUserBlocks({ labelText: "x", imageBlocks: null }), []);
   });
 
   await t("shouldCaptureSelfFrame fires every 5th cycle as safety baseline", () => {
+    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 1, activeCount: 0, cyclesSinceLastImage: 0, hijazTahwilFired: false }), false);
     assert.equal(shouldCaptureSelfFrame({ cycleIndex: 5, activeCount: 0, cyclesSinceLastImage: 0, hijazTahwilFired: false }), true);
     assert.equal(shouldCaptureSelfFrame({ cycleIndex: 10, activeCount: 0, cyclesSinceLastImage: 0, hijazTahwilFired: false }), true);
     assert.equal(shouldCaptureSelfFrame({ cycleIndex: 0, activeCount: 0, cyclesSinceLastImage: 0, hijazTahwilFired: false }), false);
-    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 1, activeCount: 0, cyclesSinceLastImage: 0, hijazTahwilFired: false }), false);
   });
 
   await t("shouldCaptureSelfFrame fires when active_count > 8", () => {
-    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 2, activeCount: 9, cyclesSinceLastImage: 0, hijazTahwilFired: false }), true);
-    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 2, activeCount: 8, cyclesSinceLastImage: 0, hijazTahwilFired: false }), false);
+    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 0, activeCount: 9, cyclesSinceLastImage: 0, hijazTahwilFired: false }), true);
+    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 0, activeCount: 8, cyclesSinceLastImage: 0, hijazTahwilFired: false }), false);
   });
 
   await t("shouldCaptureSelfFrame fires when cyclesSinceLastImage > 4", () => {
-    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 2, activeCount: 0, cyclesSinceLastImage: 5, hijazTahwilFired: false }), true);
-    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 2, activeCount: 0, cyclesSinceLastImage: 4, hijazTahwilFired: false }), false);
+    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 0, activeCount: 0, cyclesSinceLastImage: 5, hijazTahwilFired: false }), true);
+    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 0, activeCount: 0, cyclesSinceLastImage: 4, hijazTahwilFired: false }), false);
   });
 
   await t("shouldCaptureSelfFrame fires when hijaz_tahwil_fired is true", () => {
-    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 2, activeCount: 0, cyclesSinceLastImage: 0, hijazTahwilFired: true }), true);
+    assert.equal(shouldCaptureSelfFrame({ cycleIndex: 0, activeCount: 0, cyclesSinceLastImage: 0, hijazTahwilFired: true }), true);
   });
 
   await t("shouldCaptureSelfFrame combines triggers with OR, not AND", () => {
@@ -292,7 +292,7 @@ if (isDirectNodeExecution) {
     });
     assert.equal(blocks.length, 2);
     assert.equal(blocks[0].type, "text");
-    assert.match(blocks[0].text, /Previous frame.*cycle 5/);
+    assert.match(blocks[0].text, /Prior frame.*cycle 5.*visual continuity/);
     assert.match(blocks[0].text, /Elements=6/);
     assert.match(blocks[0].text, /dominant=text/);
     assert.match(blocks[0].text, /background_age=18/);

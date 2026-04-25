@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 export const DEFAULT_THINKING = Object.freeze({ type: "adaptive" });
-export const DEFAULT_OUTPUT_CONFIG = Object.freeze({ effort: "medium" });
+export const DEFAULT_OUTPUT_CONFIG = Object.freeze({ effort: "high" });
 
 export function makeOpusClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -20,7 +20,29 @@ export function resolveModel() {
   return process.env.ANTHROPIC_MODEL || "claude-opus-4-7";
 }
 
-export async function callOpus(client, packet) {
+function parseEnvInt(name, fallback) {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isRetryableOpusError(err) {
+  const status = err?.status ?? err?.response?.status;
+  if ([408, 409, 429, 500, 502, 503, 504, 529].includes(status)) return true;
+  const message = String(err?.message ?? "").toLowerCase();
+  return (
+    message.includes("overloaded") ||
+    message.includes("rate limit") ||
+    message.includes("rate_limit") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("timeout")
+  );
+}
+
+export async function callOpus(client, packet, options = {}) {
   const {
     model,
     max_tokens,
@@ -33,19 +55,39 @@ export async function callOpus(client, packet) {
   const params = { model, max_tokens, system, tools, messages };
   if (thinking) params.thinking = thinking;
   if (output_config) params.output_config = output_config;
-  try {
-    return await client.messages.create(params);
-  } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) {
-      throw new Error(`Auth error: ${err.message}. Check ANTHROPIC_API_KEY.`);
+
+  const maxAttempts = Math.max(
+    1,
+    options.maxAttempts ?? parseEnvInt("FLB_OPUS_MAX_ATTEMPTS", 6),
+  );
+  const baseDelayMs = options.baseDelayMs ?? parseEnvInt("FLB_OPUS_RETRY_BASE_MS", 1500);
+  const logger = options.logger ?? process.stderr;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await client.messages.create(params);
+    } catch (err) {
+      if (err instanceof Anthropic.AuthenticationError) {
+        throw new Error(`Auth error: ${err.message}. Check ANTHROPIC_API_KEY.`);
+      }
+      if (err instanceof Anthropic.BadRequestError) {
+        throw new Error(`Bad request (400): ${err.message}. Packet shape is wrong; not retrying.`);
+      }
+      if (err instanceof Anthropic.NotFoundError) {
+        throw new Error(`Not found (404): ${err.message}. Likely an invalid model id: ${model}.`);
+      }
+
+      const retryable = isRetryableOpusError(err);
+      if (!retryable || attempt >= maxAttempts) throw err;
+
+      const jitterMs = Math.floor(Math.random() * 250);
+      const delayMs = Math.min(15000, baseDelayMs * 2 ** (attempt - 1)) + jitterMs;
+      logger?.write?.(
+        `WARN: Opus API transient failure (${err.status ?? "unknown"}): ${err.message}. ` +
+          `Retrying ${attempt + 1}/${maxAttempts} in ${delayMs}ms.\n`,
+      );
+      await sleep(delayMs);
     }
-    if (err instanceof Anthropic.BadRequestError) {
-      throw new Error(`Bad request (400): ${err.message}. Packet shape is wrong; not retrying.`);
-    }
-    if (err instanceof Anthropic.NotFoundError) {
-      throw new Error(`Not found (404): ${err.message}. Likely an invalid model id: ${model}.`);
-    }
-    throw err;
   }
 }
 
@@ -89,7 +131,7 @@ if (isDirectNodeExecution) {
     }
   });
 
-  await t("callOpus passes thinking and output_config to messages.create by default", async () => {
+  await t("callOpus passes thinking and high output_config to messages.create by default", async () => {
     const calls = [];
     const fakeClient = {
       messages: {
@@ -108,7 +150,7 @@ if (isDirectNodeExecution) {
     });
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0].thinking, { type: "adaptive" });
-    assert.deepEqual(calls[0].output_config, { effort: "medium" });
+    assert.deepEqual(calls[0].output_config, { effort: "high" });
   });
 
   await t("callOpus honours explicit overrides", async () => {
@@ -159,6 +201,37 @@ if (isDirectNodeExecution) {
       messages: [{ role: "user", content: [{ type: "text", text: "q" }] }],
     });
     assert.deepStrictEqual(calls[0].system, systemBlocks);
+  });
+
+  await t("callOpus retries transient overload errors before succeeding", async () => {
+    let attempts = 0;
+    const fakeClient = {
+      messages: {
+        create: async () => {
+          attempts += 1;
+          if (attempts < 3) {
+            const err = new Error("529 overloaded_error: Overloaded");
+            err.status = 529;
+            throw err;
+          }
+          return { id: "msg", content: [] };
+        },
+      },
+    };
+    const logger = { write() {} };
+    const response = await callOpus(
+      fakeClient,
+      {
+        model: "claude-opus-4-7",
+        max_tokens: 1024,
+        system: [{ type: "text", text: "sys" }],
+        tools: [],
+        messages: [{ role: "user", content: "hi" }],
+      },
+      { maxAttempts: 3, baseDelayMs: 0, logger },
+    );
+    assert.equal(response.id, "msg");
+    assert.equal(attempts, 3);
   });
 
   process.stdout.write(`\n${pass}/${pass + fail} passed\n`);

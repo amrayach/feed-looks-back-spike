@@ -23,6 +23,51 @@ function normalizeQuery(query) {
   return query.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// Bayati search-query refinement.
+//
+// This function appends search hints to Opus's image queries before they
+// hit the image API. The previous (Hijaz) version amplified the
+// architectural register: "lamp" → "oil lamp still life low light stone",
+// "arch/door/threshold" → "stone interior architecture natural light".
+// Even with a perfect Bayati prompt, those amplifiers would pull search
+// results back toward the Hijaz visual world.
+//
+// The Bayati refinements below emphasise the interior-figurative register:
+// solitary figures, hands, water, soft fabric, night, quiet detail. The
+// fallback retains "documentary photograph" — that substring is asserted
+// by the self-tests below — but drops "interior" and "texture" so generic
+// queries don't auto-default to architectural results.
+export function curateImageSearchQuery(query) {
+  const normalized = normalizeQuery(query);
+  if (!normalized) return "";
+  const additions = [];
+  if (/\b(water|moon|moonlight|moonlit|ripple|pool|stream|drop|dew)\b/.test(normalized)) {
+    additions.push("still water moonlight low light natural reflection photograph");
+  }
+  if (/\b(hand|palm|fingers|cupped|wrist|knuckle)\b/.test(normalized)) {
+    additions.push("close-up hand soft natural light documentary photograph");
+  }
+  if (/\b(figure|person|silhouette|seated|walking|bowed|back|profile|head|shoulder|sleeping)\b/.test(normalized)) {
+    additions.push("solitary figure low light documentary photograph quiet");
+  }
+  if (/\b(linen|paper|cloth|fabric|feather|blanket|silk|sheet)\b/.test(normalized)) {
+    additions.push("soft fabric low light natural texture documentary photograph");
+  }
+  if (/\b(candle|flame|glow|lantern|lamp)\b/.test(normalized)) {
+    additions.push("warm low light soft glow documentary photograph");
+  }
+  if (/\b(breath|window|glass|rain|mist|vapour|vapor)\b/.test(normalized)) {
+    additions.push("low light quiet detail natural documentary photograph");
+  }
+  if (/\b(night|dusk|dark|shadow|moonlit|starlight|evening)\b/.test(normalized)) {
+    additions.push("night low light quiet documentary photograph");
+  }
+  if (additions.length === 0) {
+    additions.push("low light natural soft documentary photograph");
+  }
+  return normalizeQuery(`${normalized} ${additions.join(" ")}`);
+}
+
 function cacheHashForQuery(normalizedQuery) {
   return createHash("sha256").update(normalizedQuery).digest("hex").slice(0, 16);
 }
@@ -72,7 +117,8 @@ function makeAttribution(entry) {
 export async function fetchImage(query, options = {}) {
   ensureEnvLoaded();
 
-  const normalizedQuery = normalizeQuery(query);
+  const originalQuery = normalizeQuery(query);
+  const normalizedQuery = curateImageSearchQuery(query);
   if (!normalizedQuery) {
     return { path: null, attribution: null, error: "invalid query" };
   }
@@ -147,7 +193,8 @@ export async function fetchImage(query, options = {}) {
     writeFileSync(imagePath, imageBuffer);
 
     index[hash] = {
-      query: normalizedQuery,
+      query: originalQuery,
+      search_query: normalizedQuery,
       photographer_name: result?.user?.name ?? null,
       photographer_url: appendUtm(result?.user?.links?.html ?? null),
       photo_url: appendUtm(result?.links?.html ?? null),
@@ -200,7 +247,8 @@ if (isDirectNodeExecution) {
     const { cacheDir, indexPath } = freshCacheRoot("flb-image-cache-hit-");
     const query = "  Afternoon LIGHT on a worn interior wall, nobody present  ";
     const normalized = normalizeQuery(query);
-    const hash = cacheHashForQuery(normalized);
+    const curated = curateImageSearchQuery(query);
+    const hash = cacheHashForQuery(curated);
     const imagePath = path.join(cacheDir, `${hash}.jpg`);
     writeFileSyncTest(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
     writeFileSyncTest(
@@ -208,6 +256,7 @@ if (isDirectNodeExecution) {
       `${JSON.stringify({
         [hash]: {
           query: normalized,
+          search_query: curated,
           photographer_name: "Cache Photographer",
           photographer_url: "https://unsplash.com/@cache?utm_source=feed_looks_back_spike&utm_medium=referral",
           photo_url: "https://unsplash.com/photos/cache?utm_source=feed_looks_back_spike&utm_medium=referral",
@@ -287,6 +336,7 @@ if (isDirectNodeExecution) {
     const entries = Object.values(index);
     assert.equal(entries.length, 1);
     assert.equal(entries[0].query, query);
+    assert.match(entries[0].search_query, /documentary photograph/);
     assert.equal(entries[0].photographer_name, "Ada Example");
     assert.match(entries[0].photographer_url, /utm_source=feed_looks_back_spike/);
     assert.match(entries[0].photo_url, /utm_medium=referral/);
@@ -294,6 +344,8 @@ if (isDirectNodeExecution) {
       searchCalls.includes("https://api.unsplash.com/photos/photo-test/download"),
       "should ping download_location on fresh fetch",
     );
+    const searchUrl = new URL(searchCalls.find((href) => href.startsWith("https://api.unsplash.com/search/photos")));
+    assert.match(searchUrl.searchParams.get("query"), /documentary photograph/);
   });
 
   t("fetchImage returns error objects on API failure", async () => {

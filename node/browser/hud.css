@@ -1,0 +1,281 @@
+/* Code-stream HUD — low-contrast "BTS terminal" overlay, readable on 1080p.
+   Deliberately muted so it does not compete with the stage. */
+
+:root {
+  --hud-bg: #100a10;
+  --hud-bg-deep: #090609;
+  --hud-bg-panel: rgba(20, 12, 20, 0.72);
+  --hud-bg-block: rgba(28, 18, 28, 0.66);
+  --hud-fg: #eadde4;
+  --hud-fg-dim: #9b8290;
+  --hud-key: #b58da2;
+  --hud-val-str: #e4b5c5;
+  --hud-val-num: #9fc2d0;
+  --hud-val-bool: #c9b5e2;
+  --hud-val-null: #765f6d;
+  --hud-rule: rgba(202, 154, 176, 0.24);
+  --hud-rule-strong: rgba(226, 179, 194, 0.36);
+  --hud-cycle: #efd0a0;
+  --hud-code-accent: #91bdca;
+  --hud-error: #e0897d;
+  --hud-font: "JetBrains Mono", "Fira Code", "Menlo", "DejaVu Sans Mono", ui-monospace, monospace;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--hud-bg);
+  color: var(--hud-fg);
+  font-family: var(--hud-font);
+  font-size: 15px;
+  line-height: 1.5;
+  height: 100%;
+  overflow: hidden;
+}
+
+.hud-root {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 16px 20px 12px 20px;
+  gap: 10px;
+  background:
+    radial-gradient(ellipse at 18% 8%, rgba(156, 111, 132, 0.16) 0%, transparent 42%),
+    radial-gradient(ellipse at 78% 0%, rgba(145, 189, 202, 0.09) 0%, transparent 36%),
+    linear-gradient(180deg, rgba(32, 18, 31, 0.92) 0%, rgba(9, 6, 9, 0.98) 100%),
+    var(--hud-bg-deep);
+}
+
+.hud-panels {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hud-panel {
+  min-height: 0;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(226, 179, 194, 0.17);
+  background:
+    linear-gradient(180deg, rgba(28, 17, 28, 0.82), rgba(11, 7, 11, 0.7)),
+    var(--hud-bg-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 232, 240, 0.035);
+}
+
+.hud-panel-header {
+  flex: 0 0 auto;
+  padding: 9px 10px 7px 10px;
+  border-bottom: 1px solid var(--hud-rule);
+  background: rgba(14, 8, 14, 0.38);
+}
+
+.hud-panel-title {
+  color: var(--hud-cycle);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hud-panel-subtitle {
+  margin-top: 2px;
+  color: rgba(194, 164, 178, 0.78);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.hud-stream {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 10px 8px 10px 10px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(202, 154, 176, 0.34) transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Fade out the very top so new content feels like it's rising out of shadow. */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
+}
+
+.hud-stream::-webkit-scrollbar { width: 6px; }
+.hud-stream::-webkit-scrollbar-thumb { background: rgba(202, 154, 176, 0.34); border-radius: 3px; }
+
+.hud-block {
+  background: var(--hud-bg-block);
+  border-left: 2px solid var(--hud-rule);
+  padding: 8px 12px;
+  border-radius: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: inset 0 1px 0 rgba(255, 232, 240, 0.025);
+}
+
+.hud-run-start {
+  border-left-color: var(--hud-cycle);
+  color: var(--hud-fg-dim);
+}
+
+.hud-run-start-line {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.hud-run-end {
+  border-left-color: var(--hud-cycle);
+  color: var(--hud-fg-dim);
+  text-align: center;
+  font-size: 13px;
+}
+
+.hud-cycle-header {
+  border-left-color: var(--hud-cycle);
+  background: transparent;
+  padding: 10px 0 2px 0;
+  font-weight: 500;
+}
+
+.hud-cycle-label {
+  color: var(--hud-cycle);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+}
+
+.hud-cycle-status {
+  margin-left: 10px;
+  color: var(--hud-error);
+  font-size: 13px;
+}
+
+.hud-cycle-error {
+  border-left-color: var(--hud-error);
+  color: var(--hud-error);
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.hud-tool-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  row-gap: 2px;
+  margin-bottom: 2px;
+}
+
+.hud-tool-meta {
+  color: var(--hud-fg-dim);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.hud-tool-name {
+  color: var(--hud-cycle);
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.hud-json {
+  margin: 4px 0 0 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--hud-fg);
+}
+
+.hud-code-block {
+  border-left-color: var(--hud-code-accent);
+}
+
+.hud-code-lang {
+  color: rgba(159, 194, 208, 0.82);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hud-code {
+  margin: 6px 0 0 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.42;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--hud-fg);
+}
+
+.hud-k { color: var(--hud-key); }
+.hud-v { color: var(--hud-fg); }
+.hud-v-str { color: var(--hud-val-str); }
+.hud-v-num { color: var(--hud-val-num); }
+.hud-v-bool { color: var(--hud-val-bool); }
+.hud-v-null { color: var(--hud-val-null); }
+
+.hud-status {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 4px 2px 0 2px;
+  border-top: 1px solid var(--hud-rule);
+  font-size: 12px;
+  color: var(--hud-fg-dim);
+  letter-spacing: 0.04em;
+}
+
+.hud-status-mode { color: var(--hud-cycle); }
+.hud-status-clock { font-variant-numeric: tabular-nums; }
+.hud-status-state {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+
+@media (max-width: 560px), (max-height: 420px) {
+  .hud-root {
+    padding: 14px 20px 10px 20px;
+    gap: 8px;
+  }
+
+  .hud-panels {
+    gap: 10px;
+  }
+
+  .hud-panel-header {
+    padding: 8px 10px 6px 10px;
+  }
+
+  .hud-stream {
+    padding-top: 8px;
+    mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px);
+  }
+
+  .hud-block {
+    padding: 7px 10px;
+  }
+}
+
+@media (min-width: 980px) {
+  .hud-panels {
+    flex-direction: row;
+  }
+}
