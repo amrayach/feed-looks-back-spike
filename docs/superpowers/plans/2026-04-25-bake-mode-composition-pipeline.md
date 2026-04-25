@@ -4,7 +4,7 @@
 
 **Goal:** Build an additive offline three-pass composition pipeline (planning + per-cycle execution + critique/refine) that bakes Opus tool-call decisions for two pre-recorded tracks, then replays them through the existing stage with audio-aligned dispatch and a Playwright video capture, producing the hackathon submission video.
 
-**Architecture:** Pure-additive bake/replay path. The 162-test live architecture stays untouched. New python module produces multi-modal track artifacts. Three new node CLI drivers issue Opus calls offline, persisting all inputs/outputs/logs/validation errors to disk for inspection and resumption. New `--use-baked <bake_dir>` flag in `run_spike.mjs` short-circuits `opus_client.mjs` and replays cached cycles via `bake_player.mjs`. Per-cycle "rationale" is a model-emitted visible text block, **not** hidden thinking content.
+**Architecture:** Pure-additive bake/replay path. The live test suite (currently 172 cases across 8 module self-tests + run_spike inline tests) stays untouched. New python module produces multi-modal track artifacts. Three new node CLI drivers issue Opus calls offline, persisting all inputs/outputs/logs/validation errors to disk for inspection and resumption. New `--use-baked <bake_dir>` flag in `run_spike.mjs` short-circuits `opus_client.mjs` and replays cached cycles via `bake_player.mjs`. Per-cycle "rationale" is a model-emitted visible text block, **not** hidden thinking content.
 
 **Tech Stack:** Node ≥22 (ESM, `@anthropic-ai/sdk` ^0.90.0, `zod` ^3.25.76, `playwright` ^1.59.1, `sharp` ^0.34.5), Python 3.11 (`librosa` 0.11, `matplotlib` 3.10, `numpy` 2.4, `soundfile`), `ffmpeg` shell.
 
@@ -105,7 +105,7 @@ node/src/run_spike.mjs    Three additive blocks (flag parse, orchestration branc
 
 ## Validation suite (must stay green after every commit)
 
-The existing live-mode tests are 8 inline self-test modules totaling 162 cases. Each module is run by direct node execution:
+The existing live-mode tests are 8 inline self-test modules plus the inline `run_spike.mjs --self-test`, totaling 172 cases (160 across the 8 module suites + 12 in run_spike). The original spec referenced "162" before recent test additions; the figure has grown. Each module is run by direct node execution:
 
 ```bash
 cd node
@@ -116,7 +116,7 @@ node src/image_content.mjs         # 14 cases
 node src/scene_state.mjs           # 92 cases
 node src/packet_builder.mjs        # 12 cases
 node browser/feature_replayer.mjs  # 7 cases (feature_bus invariants)
-node src/binding_engine.mjs        # 22 cases
+node browser/binding_engine.mjs    # 22 cases
 node src/run_spike.mjs --self-test # run-spike inline tests
 ```
 
@@ -126,7 +126,7 @@ node src/run_spike.mjs --self-test # run-spike inline tests
 cd /home/amay/Work/feed-looks-back-spike/node && \
   for f in src/invariants.mjs src/prompts_aesthetic.mjs src/image_fetch.mjs \
            src/image_content.mjs src/scene_state.mjs src/packet_builder.mjs \
-           browser/feature_replayer.mjs src/binding_engine.mjs ; do \
+           browser/feature_replayer.mjs browser/binding_engine.mjs ; do \
     echo "=== $f ===" && node "$f" || exit 1 ; \
   done && \
   node src/run_spike.mjs --self-test
@@ -631,7 +631,7 @@ Expected: `Ran 2 tests in N.NNNs · OK`.
 
 - [ ] **Step 3: Run the master validation suite**
 
-Master validation command. Expected: all 162 cases green.
+Master validation command. Expected: all 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -1049,7 +1049,7 @@ Expected: `8/8 passed`.
 
 - [ ] **Step 3: Run master validation suite (no regression)**
 
-Master validation command. Expected: 162 cases green.
+Master validation command. Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -1289,7 +1289,7 @@ Expected: `5/5 passed`.
 
 - [ ] **Step 3: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -1870,7 +1870,7 @@ Expected: `2/2 passed`.
 
 - [ ] **Step 3: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -1936,7 +1936,7 @@ Expected: stdout `composition pass complete`; `bake_song5/composition_plan.json`
 
 - [ ] **Step 4: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 5: Commit the generated plans**
 
@@ -2414,7 +2414,7 @@ Expected: `3/3 passed`.
 
 - [ ] **Step 3: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -2485,7 +2485,7 @@ Expected: each rationale is 1-2 sentences referencing the audio's character; too
 
 - [ ] **Step 4: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 5: Commit**
 
@@ -2904,7 +2904,7 @@ Expected: `3/3 passed`.
 
 - [ ] **Step 3: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -2971,7 +2971,7 @@ done
 
 - [ ] **Step 4: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 5: Commit**
 
@@ -3188,7 +3188,7 @@ Expected: `5/5 passed`.
 
 - [ ] **Step 3: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -3583,7 +3583,7 @@ Expected: `1/1 passed`.
 
 - [ ] **Step 3: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -3756,7 +3756,7 @@ Expected: `1/1 passed`.
 
 - [ ] **Step 3: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 4: Commit**
 
@@ -3967,7 +3967,7 @@ Create `bake_song1/submission/README.md` and `bake_song5/submission/README.md`. 
 
 - [ ] **Step 6: Master validation suite**
 
-Expected: 162 cases green.
+Expected: 172 cases green.
 
 - [ ] **Step 7: Commit**
 
