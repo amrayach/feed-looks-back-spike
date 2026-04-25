@@ -16,7 +16,11 @@
 
 ## What it is
 
-A musician plays in a tradition a general-purpose model wasn't optimised for. Claude Opus 4.7 listens once per musical phrase, reads the moment, and authors the visuals on stage — text that fades in, photographic references that arrive, p5 sketches and SVG fragments, every element subtly bound to the music. Earnest, attentive, almost right. The gap between what the music is and what the screen returns is the piece.
+A musician plays in a tradition a general-purpose model wasn't optimized for. Claude Opus 4.7 listens once per musical phrase, reads the moment, and authors the visuals on stage — text that fades in, photographic references that arrive, p5 sketches and SVG fragments, every element subtly bound to the music. Earnest, attentive, almost right. The gap between what the music is and what the screen returns is the piece.
+
+## Why it matters
+
+The project is named for the moment when the algorithmic feed stops only predicting taste and starts looking back. The system is not trying to erase the gap between the music and the model's response. It stages that gap: Opus listens with care, returns something sincere, and the audience watches the almost-rightness become visible.
 
 ## Visual overview
 
@@ -64,7 +68,7 @@ flowchart LR
 
 | 🚀 Run it | 📖 Read it | 📤 Submit it |
 |---|---|---|
-| [Setup](#setup) · [Live / API run](#live--api-run) · [Bake mode](#bake-mode) · [Validation](#validation) | [Visual overview](#visual-overview) · [Two temporal modes](#two-temporal-modes) · [End-to-end architecture](#end-to-end-architecture) · [Repository map](#repository-map) · [Documentation map](#documentation-map) | [Submission notes](#submission-notes) · [`docs/SUBMISSION.md`](docs/SUBMISSION.md) · [`docs/PROJECT_DESCRIPTION.md`](docs/PROJECT_DESCRIPTION.md) · [`docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md`](docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md) |
+| [Setup](#setup) · [Live / API run](#live--api-run) · [Bake mode](#bake-mode) · [Validation](#validation) | [Visual overview](#visual-overview) · [Two temporal modes](#two-temporal-modes) · [End-to-end architecture](#end-to-end-architecture) · [Repository map](#repository-map) · [Documentation map](#documentation-map) | [Submission notes](#submission-notes) · [`docs/SUBMISSION.md`](docs/SUBMISSION.md) · [`docs/PROJECT_DESCRIPTION.md`](docs/PROJECT_DESCRIPTION.md) |
 
 For the visual map of how everything connects, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). For the curated entry into the full doc set, see [`docs/INDEX.md`](docs/INDEX.md).
 
@@ -76,13 +80,13 @@ The submission branch supports two complementary paths:
   HUD, and optional audio playback run in the browser. The improvising
   stance.
 - **Bake mode:** Opus runs three offline passes over the whole track — a
-  composition pass that reads the work as multi-modal input and writes a
+  composition pass that reads the work as multimodal input and writes a
   per-cycle intent score, a parallel execution pass under that plan, and a
   critique-and-refine pass where Opus reviews and rewrites its own weak
   cycles. The browser then replays the refined score deterministically in
   sync with audio. The composing stance.
 
-Same prompts, same tools, different relationship to time.
+Same architecture, same tool vocabulary, different relationship to time.
 
 ## End-to-end architecture
 
@@ -196,7 +200,6 @@ at runtime.
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | judge, contributor | System diagrams, dataflow, evolution timeline |
 | [`docs/SUBMISSION.md`](docs/SUBMISSION.md) | reproducer | Submission runbook with rubric alignment |
 | [`docs/ASSET_PROMPTS.md`](docs/ASSET_PROMPTS.md) | maintainer | ChatGPT prompts for cover, logo, thumbnail, social, backgrounds |
-| [`docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md`](docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md) | maintainer | Final audit, Code Review Graph findings, residual risks |
 | [`assets/README.md`](assets/README.md) | maintainer | Assets directory layout and naming conventions |
 
 ## Setup
@@ -342,8 +345,6 @@ restricted sandboxes, run those from a normal shell or allow localhost binding.
 - `video_capture.mjs` gracefully falls back to manual screen recording when
   Playwright or `ffmpeg` is unavailable.
 - See `docs/SUBMISSION.md` for the concise submission runbook.
-- See `docs/FINAL_DEEP_DIVE_CHECK_2026_04_25.md` for the final audit, Code
-  Review Graph findings, validation results, and residual risks.
 
 ## License
 
