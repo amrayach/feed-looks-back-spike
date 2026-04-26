@@ -14,6 +14,26 @@
 
 ---
 
+## See it in action
+
+[![The Feed Looks Back — 3-minute demo on YouTube](https://img.youtube.com/vi/8pCh-nqXe2A/maxresdefault.jpg)](https://www.youtube.com/watch?v=8pCh-nqXe2A)
+
+▶ **[Watch the 3-minute demo on YouTube](https://www.youtube.com/watch?v=8pCh-nqXe2A)** — or replay it locally with the bundled bake (no API key, no GPU, ~60 seconds):
+
+```bash
+git clone https://github.com/amrayach/feed-looks-back-spike.git
+cd feed-looks-back-spike/node
+pnpm install
+node src/bake_watch.mjs --use-baked ../bake_song1
+```
+
+A pre-composed score is included for two tracks (`bake_song1`, `bake_song5`).
+The above command runs the deterministic browser stage silently. Audio is
+not bundled (rights); add your own track at `audio/song 1.wav` and pass
+`--stage-audio "../audio/song 1.wav"` for synced playback.
+
+---
+
 ## What it is
 
 A musician plays in a tradition a general-purpose model wasn't optimized for. Claude Opus 4.7 listens once per musical phrase, reads the moment, and authors the visuals on stage — text that fades in, photographic references that arrive, p5 sketches and SVG fragments, every element subtly bound to the music. Earnest, attentive, almost right. The gap between what the music is and what the screen returns is the piece.
@@ -340,7 +360,7 @@ restricted sandboxes, run those from a normal shell or allow localhost binding.
 
 ## Submission Notes
 
-- Current branch: `test/integration-all-four`.
+- Default branch: `main`.
 - Current baked tracks: `bake_song1` (27 cycles) and `bake_song5` (30 cycles).
 - `video_capture.mjs` gracefully falls back to manual screen recording when
   Playwright or `ffmpeg` is unavailable.
